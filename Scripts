@@ -100,7 +100,8 @@ CURRENT_LOCATORS = elements.map((el, idx)=>{
       sf: isSalesforceElement(el) ? genSalesforceXPath(el) : (isPegaElement(el) ? genPegaXPath(el) : ''),
       sfsmart: isSalesforceElement(el) ? genSalesforceSmartXPath(el) : (isPegaElement(el) ? genPegaSmartXPath(el) : '')
     },
-    css: genCSS(el)
+    css: genCSS(el),
+    playwright: genPlaywright(el)   // 👈 add this
   };
 });
 
