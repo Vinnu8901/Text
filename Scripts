@@ -189,9 +189,100 @@ function genPlaywright(el){
 }
 
 
+//
 
+// === PATCH: fillLocatorList (GLOBAL) ===
+function fillLocatorList(panel = 'basic'){
+  // UI target list
+  const listEl = (typeof locList !== 'undefined') ? locList : document.querySelector('#locList');
+  if(!listEl) return;
 
+  listEl.innerHTML = '';
+  if(!Array.isArray(CURRENT_LOCATORS) || !CURRENT_LOCATORS.length) return;
 
+  CURRENT_LOCATORS.forEach(loc => {
+    // Choose the value to show for the current panel
+    let value = (loc.xpaths && loc.xpaths[panel]) || (loc.xpaths ? loc.xpaths.basic : '');
+
+    // Prefer smart variants when applicable
+    if (panel === 'sf' && loc.xpaths && loc.xpaths.sfsmart) value = loc.xpaths.sfsmart || loc.xpaths.sf;
+    if (panel === 'pega' && loc.xpaths && loc.xpaths.pegasmart) value = loc.xpaths.pegasmart || loc.xpaths.pega;
+
+    // Build the row
+    const row = document.createElement('div');
+    row.className = 'loc-row';
+    row.style.cssText = 'background:#fff;border:1px solid #e6ecf5;border-radius:8px;padding:8px 10px;color:#0f172a;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px';
+
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = (loc.framework || '').trim() || 'Generic';
+    badge.style.cssText = 'font-size:11px;background:#eef2ff;border:1px solid #d8e1ff;border-radius:999px;padding:2px 8px;margin-right:8px;color:#1f2b46';
+
+    const left = document.createElement('div');
+    left.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;flex:1';
+    const title = document.createElement('div');
+    title.textContent = loc.text || '(no text)';
+    title.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch';
+
+    const right = document.createElement('div');
+    right.textContent = value || '';
+    right.title = value || '';
+    right.className = 'small mono';
+    right.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60ch;font-family:ui-monospace,Menlo,Consolas,monospace';
+
+    left.prepend(badge);
+    left.appendChild(title);
+    row.appendChild(left);
+    row.appendChild(right);
+
+    row.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(value || ''); } catch {}
+      if (typeof showToast === 'function') showToast('Locator copied');
+
+      // highlight in preview (XPath first, CSS fallback)
+      tryHighlightInPreviewByXPathOrCss({
+        xpath: value,
+        css: loc.css
+      });
+    });
+
+    listEl.appendChild(row);
+  });
+}
+// expose globally so other code can call it
+window.fillLocatorList = fillLocatorList;
+
+//
+function highlightElementInIframe(el){
+  if(!el) return;
+  const old = el.style.outline;
+  el.scrollIntoView({behavior:'smooth', block:'center', inline:'center'});
+  el.style.outline = '2px solid #7c5cff';
+  setTimeout(()=>{ el.style.outline = old; }, 900);
+}
+function findByXPathInIframe(xpath){
+  try{
+    const doc = (preview && (preview.contentDocument || preview.contentWindow.document)) || document;
+    const res = doc.evaluate(xpath, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const node = res.singleNodeValue;
+    return (node && node.nodeType === 1) ? node : null;
+  }catch(e){ return null; }
+}
+function tryHighlightInPreviewByXPathOrCss({xpath, css}){
+  const doc = (preview && (preview.contentDocument || preview.contentWindow.document)) || document;
+  // try XPath first
+  if (xpath && /^(\(?\/\/|\.\/\/|\/\/|\(\s*\/\/)/.test(xpath)) {
+    const el = findByXPathInIframe(xpath);
+    if(el){ highlightElementInIframe(el); return; }
+  }
+  // fallback to CSS
+  if (css){
+    try{
+      const el = doc.querySelector(css);
+      if(el){ highlightElementInIframe(el); }
+    }catch(e){}
+  }
+}
 
 
 
