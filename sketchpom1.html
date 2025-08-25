@@ -71,6 +71,7 @@
 <div class="pill">Drag & drop file into preview</div>
 <button id="btnClear" class="btn danger">Clear</button>
 <button id="btnExport" class="btn">Export (locators + checks)</button>
+    
 
 <div class="section">Locator Panels</div>
 <button class="btn" data-panel="basic">Basic</button>
@@ -78,6 +79,7 @@
 <button class="btn" data-panel="axes">Axes</button>
 <button class="btn" data-panel="functions">Functions & Relative</button>
 <button class="btn" data-panel="sf">Salesforce / LWC / PEGA</button>
+<button class="btn" data-panel="pega">Pega</button>
 
 <div class="section">POM & Steps</div>
 <div class="switch">
@@ -136,6 +138,7 @@
           <div class="chip" data-paneltab="axes">Axes</div>
           <div class="chip" data-paneltab="functions">Functions</div>
           <div class="chip" data-paneltab="sf">Salesforce</div>
+          <div class="chip" data-paneltab="pega">Pega</div>
         </div>
         <div id="locList" class="list"></div>
 
@@ -412,6 +415,37 @@ function genSalesforceXPath(el){
   return genBasicXPath(el);
 }
 
+function genPegaXPath(el){
+  const tag = el.tagName.toLowerCase();
+  const cls = el.getAttribute('class') || '';
+
+  // Pega close button (icons, role=button)
+  if(el.getAttribute('data-ctl') === 'Icon'){
+    if(cls.includes('pi-close-circle')){
+      return `//${tag}[@data-ctl="Icon" and contains(@class,"pi-close-circle")]`;
+    }
+    return `//${tag}[@data-ctl="Icon"]`;
+  }
+
+  // Pega button with role
+  if(el.getAttribute('role') === 'button'){
+    return `//${tag}[@role="button"]`;
+  }
+
+  // Named elements
+  if(el.hasAttribute('name')){
+    return `//${tag}[@name="${el.getAttribute('name')}"]`;
+  }
+
+  // Click handlers
+  if(el.hasAttribute('data-click')){
+    return `//${tag}[@data-click]`;
+  }
+
+  // fallback
+  return genBasicXPath(el);
+}
+  
 function genCSS(el){
   const tag = el.tagName.toLowerCase();
   if(el.id) return `#${cssEscape(el.id)}`;
@@ -422,6 +456,7 @@ function genCSS(el){
 }
 
 function genPlaywright(el){
+  
   // Prefer role/label where possible (heuristic)
   const roleable = /^(button|a|input|textarea|select)$/i.test(el.tagName);
   const label = bestLabelFor(el);
@@ -466,6 +501,7 @@ function extractAllLocators(){
         axes: genAxesXPath(el),
         functions: genFunctionXPath(el),
         sf: genSalesforceXPath(el)
+        pega: genPegaXpath(el)
       },
       css: genCSS(el),
       playwright: genPlaywright(el)
@@ -514,7 +550,41 @@ function tryHighlightInPreview(loc){
     setTimeout(()=>{ el.style.outline = oldOutline; }, 1000);
   }catch(e){}
 }
+function highlightElementInIframe(el){
+  if(!el) return;
+  const oldOutline = el.style.outline;
+  el.scrollIntoView({behavior:'smooth', block:'center', inline:'center'});
+  el.style.outline = '2px solid #7c5cff';
+  setTimeout(()=>{ el.style.outline = oldOutline; }, 1000);
+}
 
+function findByXPathInIframe(xpath){
+  try{
+    const doc = preview.contentDocument || preview.contentWindow.document;
+    if(!doc) return null;
+    const result = doc.evaluate(xpath, doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const node = result.singleNodeValue;
+    return (node && node.nodeType === 1) ? node : null;
+  }catch(e){
+    return null;
+  }
+}
+
+function tryHighlightInPreviewByXPathOrCss({xpath, css}){
+  // check if locator looks like an XPath
+  const looksXPath = !!xpath && (/^(\(?\/\/|\.\/\/|\/\/|\(\s*\/\/)/.test(xpath));
+  if(looksXPath){
+    const el = findByXPathInIframe(xpath);
+    if(el){ highlightElementInIframe(el); return; }
+  }
+  // fallback to CSS
+  try{
+    const doc = preview.contentDocument || preview.contentWindow.document;
+    if(!doc || !css) return;
+    const el = doc.querySelector(css);
+    if(el){ highlightElementInIframe(el); }
+  }catch(e){}
+}
 /* =========================
    Export (locators + checks)
 ========================= */
