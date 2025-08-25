@@ -64,4 +64,119 @@ function genPlaywright(el){
   return `page.locator("${css}")`;
 }
 
+//// Find a good neighbour/heading/label text to use as an anchor
+function getSmartAnchorText(el){
+  let t = el.previousElementSibling?.textContent?.trim();
+  if(t && t.length >= 2) return t.replace(/\s+/g,' ').slice(0,80);
+
+  const id = el.id;
+  if(id){
+    const lab = CURRENT_DOC.querySelector(`label[for="${cssEscape(id)}"]`);
+    if(lab && lab.textContent.trim()) return lab.textContent.trim().replace(/\s+/g,' ').slice(0,80);
+  }
+
+  const anc = el.closest?.('fieldset,section,form,div,article');
+  if(anc){
+    const head = anc.querySelector('legend,h1,h2,h3,h4,h5,h6');
+    if(head && head.textContent.trim()) return head.textContent.trim().replace(/\s+/g,' ').slice(0,80);
+  }
+
+  const aria = el.getAttribute('aria-label');
+  if(aria && aria.trim()) return aria.trim().replace(/\s+/g,' ').slice(0,80);
+
+  const ph = el.getAttribute('placeholder');
+  if(ph && ph.trim()) return ph.trim().replace(/\s+/g,' ').slice(0,80);
+
+  const selfTxt = (el.textContent||'').trim();
+  if(selfTxt) return selfTxt.replace(/\s+/g,' ').slice(0,80);
+
+  return '';
+}
+//
+function genSalesforceSmartXPath(el){
+  const tag = el.tagName.toLowerCase();
+  const cls = el.getAttribute('class') || '';
+  const anchor = getSmartAnchorText(el);
+  if(!anchor) return ''; // let UI fall back to regular
+
+  const anchorEsc = anchor.replace(/"/g,'\\"');
+  let cond = '';
+  if(cls.includes('slds-button') || tag === 'button'){
+    cond = 'contains(@class,"slds-button")';
+  } else if (cls.includes('slds-input') || tag === 'input'){
+    cond = 'contains(@class,"slds-input")';
+  } else if (/^lightning-/.test(tag)){
+    return `//*[self::legend or self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6 or self::label][normalize-space()="${anchorEsc}"]//following::${tag}[1]`;
+  } else {
+    cond = 'contains(@class,"slds-")';
+  }
+  return `//*[self::legend or self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6 or self::label or self::span][normalize-space()="${anchorEsc}"]//following::${tag}[${cond}][1]`;
+}
+
+function genPegaSmartXPath(el){
+  const tag = el.tagName.toLowerCase();
+  const cls = el.getAttribute('class') || '';
+  const anchor = getSmartAnchorText(el);
+  if(!anchor) return ''; // let UI fall back to regular
+
+  const anchorEsc = anchor.replace(/"/g,'\\"');
+  let conds = [];
+  if (el.getAttribute('data-ctl') === 'Icon') conds.push('@data-ctl="Icon"');
+  if (el.getAttribute('role') === 'button') conds.push('@role="button"');
+  const piClass = (cls.split(/\s+/).find(c=>/^pi-/.test(c)) || '');
+  if (piClass) conds.push(`contains(@class,"${piClass}")`);
+  const cond = conds.length ? '[' + conds.join(' and ') + ']' : '';
+
+  return `//*[self::legend or self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6 or self::label or self::span][normalize-space()="${anchorEsc}"]//following::${tag}${cond}[1]`;
+}
+////
+xpaths: {
+  basic: genBasicXPath(el),
+  wildcards: genWildcardXPath(el),
+  axes: genAxesXPath(el),
+  functions: genFunctionXPath(el),
+  sf: genSalesforceXPath(el),
+  pega: genPegaXPath(el),
+  // NEW smart variants (may be empty string)
+  sfsmart: genSalesforceSmartXPath(el),
+  pegasmart: genPegaSmartXPath(el)
+},
+
+
+
+
+////
+function fillLocatorList(panel='basic'){
+  locList.innerHTML = '';
+  if(!CURRENT_LOCATORS.length){ return; }
+  CURRENT_LOCATORS.forEach(loc=>{
+    // Prefer smart when user is on 'sf' or 'pega' panels and a smart xpath exists
+    let value = (loc.xpaths?.[panel]) || loc.xpaths.basic;
+    if(panel === 'sf' && loc.xpaths.sfsmart) value = loc.xpaths.sfsmart || loc.xpaths.sf;
+    if(panel === 'pega' && loc.xpaths.pegasmart) value = loc.xpaths.pegasmart || loc.xpaths.pega;
+
+    const row = document.createElement('div');
+    row.className = 'loc-row';
+    row.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1">
+        <span class="badge">${loc.tag}</span>
+        <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch">${loc.text || '(no text)'}</div>
+      </div>
+      <div class="small mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60ch" title="${value}">${value}</div>
+    `;
+    row.addEventListener('click', async ()=>{
+      await navigator.clipboard.writeText(value);
+      showToast('Locator copied');
+      tryHighlightInPreviewByXPathOrCss({ xpath: value, css: loc.css });
+    });
+    locList.appendChild(row);
+  });
+}
+
+////
+lines.push(`XPath (salesforce): ${l.xpaths.sf}`);
+if(l.xpaths.sfsmart) lines.push(`XPath (salesforce smart): ${l.xpaths.sfsmart}`);
+lines.push(`XPath (pega): ${l.xpaths.pega}`);
+if(l.xpaths.pegasmart) lines.push(`XPath (pega smart): ${l.xpaths.pegasmart}`);
+
 
