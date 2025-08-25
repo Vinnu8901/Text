@@ -1,171 +1,130 @@
-// create this genXpathfunction along with other functions
+// Add detection 
+function isPegaElement(el){
+  return el.hasAttribute('data-test-id') || el.hasAttribute('data-ctl') || el.hasAttribute('data-click') ||
+         el.hasAttribute('data-hotkey') || el.hasAttribute('data-validation') || el.hasAttribute('data-required') ||
+         el.hasAttribute('data-template') || el.hasAttribute('string_type') || el.hasAttribute('reserve_space') ||
+         el.hasAttribute('data-ui-meta') || el.hasAttribute('node_name') || el.hasAttribute('pyclassname') ||
+         el.hasAttribute('pyworkpage');
+}
 
-function genPegaXPath(el){
+function isSalesforceElement(el){
   const tag = el.tagName.toLowerCase();
-  const cls = el.getAttribute('class') || '';
+  const cls = el.className||'';
+  return el.hasAttribute('data-aura-class') || el.hasAttribute('data-aura-rendered-by') ||
+         el.hasAttribute('data-key') || el.hasAttribute('data-id') || el.hasAttribute('data-qa-locator') ||
+         tag.startsWith('lightning-') || tag.startsWith('force-') || cls.includes('slds-');
+}
 
-  // Pega close button (icons, role=button)
-  if(el.getAttribute('data-ctl') === 'Icon'){
-    if(cls.includes('pi-close-circle')){
-      return `//${tag}[@data-ctl="Icon" and contains(@class,"pi-close-circle")]`;
-    }
-    return `//${tag}[@data-ctl="Icon"]`;
-  }
 
-  // Pega button with role
-  if(el.getAttribute('role') === 'button'){
-    return `//${tag}[@role="button"]`;
-  }
 
-  // Named elements
-  if(el.hasAttribute('name')){
-    return `//${tag}[@name="${el.getAttribute('name')}"]`;
-  }
+//Replace Sf gens
+function genSalesforceXPath(el){
+  const tag = el.tagName.toLowerCase();
 
-  // Click handlers
-  if(el.hasAttribute('data-click')){
-    return `//${tag}[@data-click]`;
-  }
+  if(el.hasAttribute('data-qa-locator')) return `//*[@data-qa-locator="${el.getAttribute('data-qa-locator')}"]`;
+  if(el.hasAttribute('data-aura-class')) return `//*[@data-aura-class="${el.getAttribute('data-aura-class')}"]`;
+  if(el.hasAttribute('data-aura-rendered-by')) return `//*[@data-aura-rendered-by="${el.getAttribute('data-aura-rendered-by')}"]`;
+  if(el.hasAttribute('data-key')) return `//*[@data-key="${el.getAttribute('data-key')}"]`;
+  if(el.hasAttribute('data-id')) return `//*[@data-id="${el.getAttribute('data-id')}"]`;
 
-  // fallback
+  if(tag.startsWith('lightning-')) return `//${tag}`;
+  if(tag.startsWith('force-')) return `//${tag}`;
+  if((el.className||'').includes('slds-')) return `//*[contains(@class,"slds-")]`;
+
   return genBasicXPath(el);
 }
 
-// modify playwright generate 
-
-function genPlaywright(el){
+function genSalesforceSmartXPath(el){
   const tag = el.tagName.toLowerCase();
-  const label = bestLabelFor(el);
+  const a = getSmartAnchorText(el);
+  if(!a) return '';
+  const A = a.replace(/"/g,'\\"');
 
-  // ✅ Pega-specific
-  if(el.getAttribute('data-ctl') === 'Icon'){
-    const cls = el.getAttribute('class') || '';
-    if(cls.includes('pi-close-circle')){
-      return `page.locator('span[data-ctl="Icon"].pi-close-circle')`;
-    }
-    return `page.locator('${tag}[data-ctl="Icon"]')`;
-  }
-  if(el.getAttribute('role') === 'button'){
-    return `page.getByRole('button')`;
-  }
-  if(el.hasAttribute('name')){
-    return `page.locator('${tag}[name="${el.getAttribute('name')}"]')`;
-  }
+  if(el.hasAttribute('data-qa-locator')) return `//*[normalize-space()="${A}"]//following::*[@data-qa-locator="${el.getAttribute('data-qa-locator')}"][1]`;
+  if(el.hasAttribute('data-aura-class')) return `//*[normalize-space()="${A}"]//following::*[@data-aura-class="${el.getAttribute('data-aura-class')}"][1]`;
+  if(el.hasAttribute('data-aura-rendered-by')) return `//*[normalize-space()="${A}"]//following::*[@data-aura-rendered-by="${el.getAttribute('data-aura-rendered-by')}"][1]`;
+  if(el.hasAttribute('data-key')) return `//*[normalize-space()="${A}"]//following::*[@data-key="${el.getAttribute('data-key')}"][1]`;
+  if(el.hasAttribute('data-id')) return `//*[normalize-space()="${A}"]//following::*[@data-id="${el.getAttribute('data-id')}"][1]`;
 
-  // 🔽 fallback to existing logic
-  const roleable = /^(button|a|input|textarea|select)$/i.test(tag);
-  if(roleable && label){
-    if(tag==='a') return `page.getByRole("link", { name: "${label}" })`;
-    if(tag==='button') return `page.getByRole("button", { name: "${label}" })`;
-    if(tag==='input' || tag==='textarea' || tag==='select') return `page.getByLabel("${label}")`;
-  }
-  if(el.id) return `page.locator("#${el.id}")`;
-  const css = genCSS(el);
-  return `page.locator("${css}")`;
-}
-
-//// Find a good neighbour/heading/label text to use as an anchor
-function getSmartAnchorText(el){
-  let t = el.previousElementSibling?.textContent?.trim();
-  if(t && t.length >= 2) return t.replace(/\s+/g,' ').slice(0,80);
-
-  const id = el.id;
-  if(id){
-    const lab = CURRENT_DOC.querySelector(`label[for="${cssEscape(id)}"]`);
-    if(lab && lab.textContent.trim()) return lab.textContent.trim().replace(/\s+/g,' ').slice(0,80);
-  }
-
-  const anc = el.closest?.('fieldset,section,form,div,article');
-  if(anc){
-    const head = anc.querySelector('legend,h1,h2,h3,h4,h5,h6');
-    if(head && head.textContent.trim()) return head.textContent.trim().replace(/\s+/g,' ').slice(0,80);
-  }
-
-  const aria = el.getAttribute('aria-label');
-  if(aria && aria.trim()) return aria.trim().replace(/\s+/g,' ').slice(0,80);
-
-  const ph = el.getAttribute('placeholder');
-  if(ph && ph.trim()) return ph.trim().replace(/\s+/g,' ').slice(0,80);
-
-  const selfTxt = (el.textContent||'').trim();
-  if(selfTxt) return selfTxt.replace(/\s+/g,' ').slice(0,80);
+  if(tag.startsWith('lightning-') || tag.startsWith('force-')) return `//*[normalize-space()="${A}"]//following::${tag}[1]`;
+  if((el.className||'').includes('slds-')) return `//*[normalize-space()="${A}"]//following::*[contains(@class,"slds-")][1]`;
 
   return '';
 }
-//
-function genSalesforceSmartXPath(el){
-  const tag = el.tagName.toLowerCase();
-  const cls = el.getAttribute('class') || '';
-  const anchor = getSmartAnchorText(el);
-  if(!anchor) return ''; // let UI fall back to regular
 
-  const anchorEsc = anchor.replace(/"/g,'\\"');
-  let cond = '';
-  if(cls.includes('slds-button') || tag === 'button'){
-    cond = 'contains(@class,"slds-button")';
-  } else if (cls.includes('slds-input') || tag === 'input'){
-    cond = 'contains(@class,"slds-input")';
-  } else if (/^lightning-/.test(tag)){
-    return `//*[self::legend or self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6 or self::label][normalize-space()="${anchorEsc}"]//following::${tag}[1]`;
-  } else {
-    cond = 'contains(@class,"slds-")';
+//Replace pegjen
+function genPegaXPath(el){
+  const tag=el.tagName.toLowerCase();
+  const attrs=['data-test-id','data-ctl','data-click','data-hotkey','data-validation','data-required','data-template',
+               'string_type','reserve_space','data-ui-meta','node_name','pyclassname','pyworkpage'];
+  for(const a of attrs){
+    if(el.hasAttribute(a)) return `//*[@${a}="${el.getAttribute(a)}"]`;
   }
-  return `//*[self::legend or self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6 or self::label or self::span][normalize-space()="${anchorEsc}"]//following::${tag}[${cond}][1]`;
+  if(el.getAttribute('role')==='button') return `//${tag}[@role="button"]`;
+  return genBasicXPath(el);
 }
 
 function genPegaSmartXPath(el){
-  const tag = el.tagName.toLowerCase();
-  const cls = el.getAttribute('class') || '';
-  const anchor = getSmartAnchorText(el);
-  if(!anchor) return ''; // let UI fall back to regular
+  const tag=el.tagName.toLowerCase();
+  const a=getSmartAnchorText(el);
+  if(!a) return '';
+  const A=a.replace(/"/g,'\\"');
 
-  const anchorEsc = anchor.replace(/"/g,'\\"');
-  let conds = [];
-  if (el.getAttribute('data-ctl') === 'Icon') conds.push('@data-ctl="Icon"');
-  if (el.getAttribute('role') === 'button') conds.push('@role="button"');
-  const piClass = (cls.split(/\s+/).find(c=>/^pi-/.test(c)) || '');
-  if (piClass) conds.push(`contains(@class,"${piClass}")`);
-  const cond = conds.length ? '[' + conds.join(' and ') + ']' : '';
+  const attrs=['data-test-id','data-ctl','data-click','data-hotkey','data-validation','data-required','data-template',
+               'string_type','reserve_space','data-ui-meta','node_name','pyclassname','pyworkpage'];
+  for(const attr of attrs){
+    if(el.hasAttribute(attr)){
+      return `//*[normalize-space()="${A}"]//following::*[@${attr}="${el.getAttribute(attr)}"][1]`;
+    }
+  }
 
-  return `//*[self::legend or self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6 or self::label or self::span][normalize-space()="${anchorEsc}"]//following::${tag}${cond}[1]`;
+  if(el.getAttribute('role')==='button'){
+    return `//*[normalize-space()="${A}"]//following::${tag}[@role="button"][1]`;
+  }
+  return '';
 }
-////
-xpaths: {
-  basic: genBasicXPath(el),
-  wildcards: genWildcardXPath(el),
-  axes: genAxesXPath(el),
-  functions: genFunctionXPath(el),
-  sf: genSalesforceXPath(el),
-  pega: genPegaXPath(el),
-  // NEW smart variants (may be empty string)
-  sfsmart: genSalesforceSmartXPath(el),
-  pegasmart: genPegaSmartXPath(el)
-},
 
+//extralloca
+CURRENT_LOCATORS = elements.map((el, idx)=>{
+  const label = bestLabelFor(el) || textScore(el) || `elem${idx+1}`;
+  return {
+    id: `E${idx+1}`,
+    tag: el.tagName.toLowerCase(),
+    text: label,
+    framework: isPegaElement(el) ? 'Pega+' : (isSalesforceElement(el) ? 'Salesforce+' : ''),
+    xpaths: {
+      basic: genBasicXPath(el),
+      wildcards: genWildcardXPath(el),
+      axes: genAxesXPath(el),
+      functions: genFunctionXPath(el),
+      sf: isSalesforceElement(el) ? genSalesforceXPath(el) : (isPegaElement(el) ? genPegaXPath(el) : ''),
+      sfsmart: isSalesforceElement(el) ? genSalesforceSmartXPath(el) : (isPegaElement(el) ? genPegaSmartXPath(el) : '')
+    },
+    css: genCSS(el)
+  };
+});
 
+//filolis
 
-
-////
 function fillLocatorList(panel='basic'){
   locList.innerHTML = '';
-  if(!CURRENT_LOCATORS.length){ return; }
+  if(!CURRENT_LOCATORS.length) return;
+
   CURRENT_LOCATORS.forEach(loc=>{
-    // Prefer smart when user is on 'sf' or 'pega' panels and a smart xpath exists
-    let value = (loc.xpaths?.[panel]) || loc.xpaths.basic;
+    let value = loc.xpaths[panel] || loc.xpaths.basic;
     if(panel === 'sf' && loc.xpaths.sfsmart) value = loc.xpaths.sfsmart || loc.xpaths.sf;
-    if(panel === 'pega' && loc.xpaths.pegasmart) value = loc.xpaths.pegasmart || loc.xpaths.pega;
 
     const row = document.createElement('div');
     row.className = 'loc-row';
     row.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1">
-        <span class="badge">${loc.tag}</span>
-        <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch">${loc.text || '(no text)'}</div>
+        <span class="badge">${loc.framework||'Generic'}</span>
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch">${loc.text}</span>
       </div>
-      <div class="small mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60ch" title="${value}">${value}</div>
+      <div class="small mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:58ch" title="${value}">${value}</div>
     `;
     row.addEventListener('click', async ()=>{
-      await navigator.clipboard.writeText(value);
+      try{ await navigator.clipboard.writeText(value); }catch(e){}
       showToast('Locator copied');
       tryHighlightInPreviewByXPathOrCss({ xpath: value, css: loc.css });
     });
@@ -173,57 +132,73 @@ function fillLocatorList(panel='basic'){
   });
 }
 
-////
-lines.push(`XPath (salesforce): ${l.xpaths.sf}`);
-if(l.xpaths.sfsmart) lines.push(`XPath (salesforce smart): ${l.xpaths.sfsmart}`);
-lines.push(`XPath (pega): ${l.xpaths.pega}`);
-if(l.xpaths.pegasmart) lines.push(`XPath (pega smart): ${l.xpaths.pegasmart}`);
+// plw
 
-////Test////
+function genPlaywright(el){
+  const tag = el.tagName.toLowerCase();
+  const cls = el.className || '';
+  const label = bestLabelFor(el);
 
+  /* ---------- Salesforce strategies ---------- */
+  if(el.hasAttribute('data-qa-locator')){
+    return `page.locator('[data-qa-locator="${el.getAttribute('data-qa-locator')}"]')`;
+  }
+  if(el.hasAttribute('data-aura-class')){
+    return `page.locator('[data-aura-class="${el.getAttribute('data-aura-class')}"]')`;
+  }
+  if(el.hasAttribute('data-aura-rendered-by')){
+    return `page.locator('[data-aura-rendered-by="${el.getAttribute('data-aura-rendered-by')}"]')`;
+  }
+  if(el.hasAttribute('data-key')){
+    return `page.locator('[data-key="${el.getAttribute('data-key')}"]')`;
+  }
+  if(el.hasAttribute('data-id')){
+    return `page.locator('[data-id="${el.getAttribute('data-id')}"]')`;
+  }
+  if(tag.startsWith('lightning-') || tag.startsWith('force-')){
+    return `page.locator('${tag}')`;
+  }
+  if(cls.includes('slds-')){
+    return `page.locator('[class*="slds-"]')`;
+  }
 
-function fillLocatorList(panel = 'basic'){
-  // 1) Reset the list UI
-  locList.innerHTML = '';
-  if (!CURRENT_LOCATORS.length) return;
-
-  // 2) For each extracted locator, decide which value to display for this panel
-  CURRENT_LOCATORS.forEach(loc => {
-    // Base choice: whatever matches the panel name (e.g. 'basic', 'axes', 'functions', 'sf', 'pega')
-    let value = (loc.xpaths && loc.xpaths[panel]) || loc.xpaths.basic;
-
-    // If user is on Salesforce or Pega panel, prefer the "smart" neighbor XPath when available
-    if (panel === 'sf' && loc.xpaths.sfsmart) {
-      value = loc.xpaths.sfsmart || loc.xpaths.sf;
+  /* ---------- Pega strategies ---------- */
+  const pegaAttrs = [
+    'data-test-id','data-ctl','data-click','data-hotkey','data-validation',
+    'data-required','data-template','string_type','reserve_space','data-ui-meta',
+    'node_name','pyclassname','pyworkpage'
+  ];
+  for(const a of pegaAttrs){
+    if(el.hasAttribute(a)){
+      return `page.locator('[${a}="${el.getAttribute(a)}"]')`;
     }
-    if (panel === 'pega' && loc.xpaths.pegasmart) {
-      value = loc.xpaths.pegasmart || loc.xpaths.pega;
-    }
+  }
 
-    // 3) Build the row UI
-    const row = document.createElement('div');
-    row.className = 'loc-row';
-    row.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1">
-        <span class="badge">${loc.tag}</span>
-        <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40ch">
-          ${loc.text || '(no text)'}
-        </div>
-      </div>
-      <div class="small mono" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60ch" title="${value}">
-        ${value}
-      </div>
-    `;
+  /* ---------- Generic roleable ---------- */
+  if(tag==='a' && label) return `page.getByRole('link', { name: '${label}' })`;
+  if(tag==='button' && label) return `page.getByRole('button', { name: '${label}' })`;
+  if((tag==='input'||tag==='textarea'||tag==='select') && label){
+    return `page.getByLabel('${label}')`;
+  }
 
-    // 4) When you click a row: copy the locator and highlight the element in the preview
-    row.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(value);
-      showToast('Locator copied');
-      tryHighlightInPreviewByXPathOrCss({ xpath: value, css: loc.css });
-    });
-
-    locList.appendChild(row);
-  });
+  /* ---------- Fallbacks ---------- */
+  if(el.id) return `page.locator('#${el.id}')`;
+  if(el.name) return `page.locator('${tag}[name="${el.name}"]')`;
+  return `page.locator('${tag}')`;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
