@@ -1,0 +1,67 @@
+// create this genXpathfunction along with other functions
+
+function genPegaXPath(el){
+  const tag = el.tagName.toLowerCase();
+  const cls = el.getAttribute('class') || '';
+
+  // Pega close button (icons, role=button)
+  if(el.getAttribute('data-ctl') === 'Icon'){
+    if(cls.includes('pi-close-circle')){
+      return `//${tag}[@data-ctl="Icon" and contains(@class,"pi-close-circle")]`;
+    }
+    return `//${tag}[@data-ctl="Icon"]`;
+  }
+
+  // Pega button with role
+  if(el.getAttribute('role') === 'button'){
+    return `//${tag}[@role="button"]`;
+  }
+
+  // Named elements
+  if(el.hasAttribute('name')){
+    return `//${tag}[@name="${el.getAttribute('name')}"]`;
+  }
+
+  // Click handlers
+  if(el.hasAttribute('data-click')){
+    return `//${tag}[@data-click]`;
+  }
+
+  // fallback
+  return genBasicXPath(el);
+}
+
+// modify playwright generate 
+
+function genPlaywright(el){
+  const tag = el.tagName.toLowerCase();
+  const label = bestLabelFor(el);
+
+  // ✅ Pega-specific
+  if(el.getAttribute('data-ctl') === 'Icon'){
+    const cls = el.getAttribute('class') || '';
+    if(cls.includes('pi-close-circle')){
+      return `page.locator('span[data-ctl="Icon"].pi-close-circle')`;
+    }
+    return `page.locator('${tag}[data-ctl="Icon"]')`;
+  }
+  if(el.getAttribute('role') === 'button'){
+    return `page.getByRole('button')`;
+  }
+  if(el.hasAttribute('name')){
+    return `page.locator('${tag}[name="${el.getAttribute('name')}"]')`;
+  }
+
+  // 🔽 fallback to existing logic
+  const roleable = /^(button|a|input|textarea|select)$/i.test(tag);
+  if(roleable && label){
+    if(tag==='a') return `page.getByRole("link", { name: "${label}" })`;
+    if(tag==='button') return `page.getByRole("button", { name: "${label}" })`;
+    if(tag==='input' || tag==='textarea' || tag==='select') return `page.getByLabel("${label}")`;
+  }
+  if(el.id) return `page.locator("#${el.id}")`;
+  const css = genCSS(el);
+  return `page.locator("${css}")`;
+}
+
+
