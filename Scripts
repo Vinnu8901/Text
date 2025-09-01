@@ -1,3 +1,51 @@
+function extractAllLocators(){
+  if(!CURRENT_DOC){ 
+    CURRENT_LOCATORS = [];
+    return; 
+  }
+
+  const doc = CURRENT_DOC;
+  const els = Array.from(doc.querySelectorAll(
+    'input, button, a, select, textarea, [role="button"]'
+  ));
+
+  CURRENT_LOCATORS = els.map((el,i)=>{
+    const tag  = el.tagName.toLowerCase();
+    const id   = el.id || '';
+    const name = el.getAttribute('name') || '';
+    const type = el.getAttribute('type') || '';
+    const role = el.getAttribute('role') || '';
+    const label = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.textContent || '').trim() || `elem${i+1}`;
+
+    let xp = `//${tag}`; // fallback
+
+    // ===== Enhanced XPath with operators =====
+    if(id){
+      // Exact match OR contains (covers dynamic IDs)
+      xp = `//*[@id="${id}" or contains(@id,"${id}")]`;
+    } 
+    else if(name){
+      // Exact match OR starts-with (covers partial names)
+      const shortName = name.length > 3 ? name.slice(0,3) : name;
+      xp = `//${tag}[@name="${name}" or starts-with(@name,"${shortName}")]`;
+    } 
+    else if(label){
+      // Match text OR aria-label
+      if(el.hasAttribute('aria-label')){
+        const aria = el.getAttribute('aria-label');
+        xp = `//${tag}[contains(normalize-space(.),"${label}") or contains(@aria-label,"${aria}")]`;
+      } else {
+        xp = `//${tag}[contains(normalize-space(.),"${label}")]`;
+      }
+    }
+
+    return { tag, id, name, type, role, label, xpath: xp };
+  });
+}
+
+
+
+
 // Add detection 
 function isPegaElement(el){
   return el.hasAttribute('data-test-id') || el.hasAttribute('data-ctl') || el.hasAttribute('data-click') ||
