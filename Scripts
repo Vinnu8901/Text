@@ -284,7 +284,32 @@ function tryHighlightInPreviewByXPathOrCss({xpath, css}){
   }
 }
 
+public void waitForSpinnerToDisappear() {
+    // Two possible spinner locators
+    By spinner1 = By.xpath("//lightning-spinner"); // your XPath
+    By spinner2 = By.xpath("//span[@class='slds-assistive-text' and text()='Loading']"); // my XPath
 
+    Wait<WebDriver> wait = new FluentWait<>(driver)
+            .withTimeout(Duration.ofSeconds(30))
+            .pollingEvery(Duration.ofSeconds(2))
+            .ignoring(NoSuchElementException.class)
+            .ignoring(StaleElementReferenceException.class);
+
+    wait.until(webDriver -> {
+        // Case 1: Spinner1 gone or invisible
+        boolean spinner1Gone = driver.findElements(spinner1).isEmpty() ||
+                ExpectedConditions.invisibilityOfElementLocated(spinner1).apply(driver);
+
+        // Case 2: Spinner2 gone or invisible
+        boolean spinner2Gone = driver.findElements(spinner2).isEmpty() ||
+                ExpectedConditions.invisibilityOfElementLocated(spinner2).apply(driver);
+
+        // Both should be gone
+        return spinner1Gone && spinner2Gone;
+    });
+
+    System.out.println("✅ Spinner completely disappeared");
+}
 
 
 
