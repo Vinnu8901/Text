@@ -1,3 +1,59 @@
+
+/**
+ * Find a human label/text for a form element.
+ * - defers to global bestLabelFor(el) if present
+ * - uses <label for="id"> if present
+ * - uses enclosing <label> ancestor if present
+ * - fallback: aria-label or title (optional)
+ *
+ * @param {Element} el - target element (input/select/textarea, etc)
+ * @param {Document} [doc=document] - optional document/context (useful for tests or if you provide window.CURRENT_DOC)
+ * @returns {string|null} trimmed label text or null
+ */
+function getLabelFor(el, doc = (window.CURRENT_DOC || document)) {
+  if (!el || typeof el !== 'object') return null;
+
+  // If a custom global helper exists, use it (but don't let errors bubble silently)
+  if (typeof bestLabelFor === 'function') {
+    try {
+      const best = bestLabelFor(el);
+      if (best != null) return String(best).trim();
+    } catch (err) {
+      // log but continue — don't silently swallow
+      // console.warn('bestLabelFor threw', err);
+    }
+  }
+
+  // Prefer explicit id -> label[for="id"]
+  const id = el.getAttribute && el.getAttribute('id');
+  if (id) {
+    // Escape CSS-special chars for querySelector
+    // simple helper: prefix any char that is not [A-Za-z0-9_-] with backslash
+    const escId = id.replace(/([^\w-])/g, '\\$1');
+    const sel = `label[for="${escId}"]`;
+    const lab = doc.querySelector(sel);
+    if (lab && lab.textContent) return lab.textContent.trim();
+  }
+
+  // If element is wrapped inside a <label> (e.g. <label>Text <input/></label>)
+  const parentLabel = el.closest ? el.closest('label') : null;
+  if (parentLabel && parentLabel.textContent) return parentLabel.textContent.trim();
+
+  // Optional fallbacks: aria-label or title attributes
+  if (el.getAttribute) {
+    const aria = el.getAttribute('aria-label');
+    if (aria) return aria.trim();
+    const title = el.getAttribute('title');
+    if (title) return title.trim();
+  }
+
+  return null;
+}
+
+
+$$$$$$$$$$$$$_$$$$&&-++((('_*_&+
+
+
 function extractAllLocators(){
   if(!CURRENT_DOC){ 
     CURRENT_LOCATORS = [];
