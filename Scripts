@@ -1,3 +1,382 @@
+<script>
+/**
+ * Adhyan Full Patch — Single-file replacement
+ * - Drop-in replacement for the <script>... <\/script> area of Adhyan HTML.
+ * - Implements: extraction, XPath generators (basic/wildcard/axes/functions),
+ *   Salesforce/Pega specializers, bestXPath chooser, UI renderers, dynamic picker,
+ *   robust highlight across frames & shadow DOM, action candidate finder,
+ *   templateification, artifact (zip) generator for sample languages.
+ *
+ * Usage:
+ *  - window.AdhyPatch.extractAllLocators()
+ *  - window.AdhyPatch.fillLocatorList(panel)
+ *  - window.AdhyPatch.openDynamicPicker(...)
+ *  - window.AdhyPatch.tryHighlightByXPath(xpath)
+ *  - window.AdhyPatch.buildArtifactsFiles(options) -> returns files map
+ *
+ * Note: This script is defensive and provides fallbacks for missing host helpers.
+ */
+
+(function AdhyanFullPatch(){
+  // Namespace
+  const NS = window.AdhyPatch = window.AdhyPatch || {};
+
+  // -------------------- CONFIG --------------------
+  NS.DEBUG = false;
+  function dbg(...args){ if(NS.DEBUG) console.debug('[AdhyPatch]', ...args); }
+
+  // -------------------- CORE HELPERS --------------------
+  function xpathLiteral(s){
+    s = String(s || '');
+    if (s.indexOf('"') === -1) return `"${s}"`;
+    if (s.indexOf("'") === -1) return `'${s}'`;
+    const parts = s.split('"'), out = [];
+    for (let i = 0; i < parts.length; i++){
+      if (parts[i] !== '') out.push(`"${parts[i].replace(/\\/g,'\\\\')}"`);
+      if (i < parts.length - 1) out.push(`'"'`);
+    }
+    return `concat(${out.join(',')})`;
+  }
+
+  function safeAttr(el, name){ try { return el.getAttribute ? el.getAttribute(name) : null; } catch(e){ return null; } }
+
+  function getLabelFor(el){
+    try { if (typeof window.bestLabelFor === 'function') return window.bestLabelFor(el); } catch(e){}
+    const id = el && el.getAttribute ? el.getAttribute('id') : null;
+    if (id) {
+      try {
+        const sel = `label[for="${id.replace(/([#.;,[\\]()>+~=:*"\\\\])/g,'\\\\$1')}"]`;
+        const lab = (window.CURRENT_DOC || document).querySelector(sel);
+        if (lab && lab.textContent) return lab.textContent.trim();
+      } catch(e){}
+    }
+    const parentLabel = el && el.closest ? el.closest('label') : null;
+    if (parentLabel && parentLabel.textContent) return parentLabel.textContent.trim();
+    return null;
+  }
+
+  // -------------------- SKIP / DEDUPE --------------------
+  function isHiddenByInlineStyle(el){
+    const s = (safeAttr(el,'style')||'').toLowerCase();
+    return /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|pointer-events\s*:\s*none/.test(s);
+  }
+  function hasUsefulLabel(el){
+    if(!el) return false;
+    if (safeAttr(el,'aria-label')) return true;
+    if (safeAttr(el,'placeholder')) return true;
+    if (safeAttr(el,'name')) return true;
+    const id = el.id;
+    if (id){
+      try{
+        const sel = `label[for="${id.replace(/([#.;,[\\]()>+~=:*"\\\\])/g,'\\\\$1')}"]`;
+        if((window.CURRENT_DOC||document).querySelector(sel)) return true;
+      }catch(e){}
+    }
+    const t = (el.textContent||'').trim();
+    return t.length > 0;
+  }
+  function isSFNoise(el){
+    const cls = el.className || '';
+    if(/\bslds-assistive-text\b/.test(cls)) return true;
+    if(/\bslds-hide\b/.test(cls)) return true;
+    if(safeAttr(el,'role') === 'presentation') return true;
+    return false;
+  }
+  function isPegaNoise(el){
+    const ctl = safeAttr(el,'data-ctl') || '';
+    if(ctl === 'Tooltip') return true;
+    if(ctl === 'Icon' && !el.hasAttribute('role') && !el.onclick) return true;
+    return false;
+  }
+  function shouldSkip(el){
+    if(!el || el.nodeType !== 1) return true;
+    const tag = el.tagName.toLowerCase();
+
+    if(el.hasAttribute('hidden')) return true;
+    if(safeAttr(el,'aria-hidden') === 'true') return true;
+    if(isHiddenByInlineStyle(el)) return true;
+    if(el.hasAttribute('disabled') || safeAttr(el,'aria-disabled') === 'true') return true;
+    if(el.hasAttribute('readonly')) return true;
+    if(tag === 'input' && (safeAttr(el,'type')||'').toLowerCase() === 'hidden') return true;
+
+    if(tag === 'a' && (!el.hasAttribute('href') || safeAttr(el,'href') === '#')) return true;
+
+    if(isSFNoise(el)) return true;
+    if(isPegaNoise(el)) return true;
+
+    if(!hasUsefulLabel(el)) return true;
+
+    return false;
+  }
+
+  function getSmartAnchorTextSafe(el){
+    try { if (typeof window.getSmartAnchorText === 'function') return window.getSmartAnchorText(el) || ''; } catch(e){}
+    const l = getLabelFor(el);
+    return l || (safeAttr(el,'aria-label') || '').trim();
+  }
+
+  // -------------------- COLLECTOR --------------------
+  function collectCandidateElements(doc){
+    doc = doc || document;
+    const selectors = [
+      'input:not([type="hidden"])','button','a','select','textarea',
+      '[role="button"]','span[role="button"]',
+      '[data-ctl]','[data-qa-locator]','[data-aura-class]','[data-aura-rendered-by]','[data-key]','[data-id]',
+      'lightning-input','lightning-button','lightning-combobox','lightning-textarea',
+      'lightning-record-edit-form','lightning-tab','lightning-input-field','lightning-formatted-text',
+      'force-record-view','force-input','force-button','force-lookup','force-list-view'
+    ];
+    let basics = [];
+    try { basics = Array.from(doc.querySelectorAll(selectors.join(','))); } catch(e){ basics = []; }
+    let filtered = basics.filter(el => !shouldSkip(el));
+    const seen = new Set();
+    filtered = filtered.filter(el=>{
+      const anchor = (typeof getSmartAnchorTextSafe === 'function') ? getSmartAnchorTextSafe(el) : '';
+      const sig = [
+        el.tagName.toLowerCase(),
+        el.id||'',
+        safeAttr(el,'name')||'',
+        safeAttr(el,'data-qa-locator')||'',
+        safeAttr(el,'data-ctl')||'',
+        safeAttr(el,'data-key')||'',
+        safeAttr(el,'data-id')||'',
+        anchor
+      ].join('|');
+      if(seen.has(sig)) return false;
+      seen.add(sig);
+      return true;
+    });
+    return filtered;
+  }
+
+  // -------------------- GENERATORS: Basic / Wildcard / Axes / Function --------------------
+  function genBasicXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (el.id) return `//*[@id=${xpathLiteral(el.id)}]`;
+    const name = safeAttr(el,'name');
+    if (name) return `//${tag}[@name=${xpathLiteral(name)}]`;
+    const label = getLabelFor(el);
+    if (label) return `//${tag}[contains(normalize-space(.), ${xpathLiteral(label.trim())})]`;
+    const cls = (safeAttr(el,'class')||'').trim().split(/\s+/).filter(Boolean)[0];
+    if (cls) return `//${tag}[contains(concat(' ', normalize-space(@class), ' '), ${xpathLiteral(' ' + cls + ' ')})]`;
+    const parent = el.parentElement;
+    if (!parent) return `//${tag}[1]`;
+    const same = Array.from(parent.children).filter(x => x.tagName === el.tagName);
+    const idx = same.indexOf(el) + 1;
+    return `${genBasicXPath(parent)}/${tag}[${idx}]`;
+  }
+
+  function genWildcardXPath(el){
+    if(!el) return '';
+    if (el.id) return `//*[@id=${xpathLiteral(el.id)}]`;
+    const name = safeAttr(el,'name');
+    if (name) return `//*[@name=${xpathLiteral(name)}]`;
+    const label = getLabelFor(el);
+    if (label) return `//*[contains(normalize-space(.), ${xpathLiteral(label.trim())})]`;
+    const cls = (safeAttr(el,'class')||'').trim().split(/\s+/).filter(Boolean)[0];
+    if (cls) return `//*[contains(concat(' ', normalize-space(@class), ' '), ${xpathLiteral(' ' + cls + ' ')})]`;
+    return genBasicXPath(el);
+  }
+
+  function genAxesXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    const id = safeAttr(el,'id');
+    if (id) return `//label[@for=${xpathLiteral(id)}]/following::${tag}[1]`;
+    const al = safeAttr(el,'aria-labelledby');
+    if (al) return `//*[@id=${xpathLiteral(al.split(/\s+/)[0])}]/following::${tag}[1]`;
+    const label = getLabelFor(el);
+    if (label) return `//label[contains(normalize-space(.), ${xpathLiteral(label.trim())})]/following::${tag}[1]`;
+    return `((//legend|//h1|//h2|//h3|//h4|//h5|//h6)[contains(normalize-space(.), ${xpathLiteral((label||'').trim())})]/following::${tag}[1]) | (${genBasicXPath(el)})`;
+  }
+
+  function genFunctionXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    const ph = safeAttr(el,'placeholder');
+    if (ph && String(ph).trim()) return `//${tag}[contains(@placeholder, ${xpathLiteral(ph)})]`;
+    const ti = safeAttr(el,'title');
+    if (ti && String(ti).trim()) return `//${tag}[contains(@title, ${xpathLiteral(ti)})]`;
+    const alt = safeAttr(el,'alt');
+    if (alt && String(alt).trim()) return `//${tag}[contains(@alt, ${xpathLiteral(alt)})]`;
+    return genBasicXPath(el);
+  }
+
+  // -------------------- Salesforce / LWC / Aura / Pega generators --------------------
+  function genSalesforceXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (safeAttr(el,'data-qa-locator')) return `//${tag}[@data-qa-locator=${xpathLiteral(safeAttr(el,'data-qa-locator'))}]`;
+    if (safeAttr(el,'data-key')) return `//${tag}[@data-key=${xpathLiteral(safeAttr(el,'data-key'))}]`;
+    if (safeAttr(el,'title')) return `//${tag}[@title=${xpathLiteral(safeAttr(el,'title'))}]`;
+    if (safeAttr(el,'data-aura-rendered-by')) return `//${tag}[@data-aura-rendered-by=${xpathLiteral(safeAttr(el,'data-aura-rendered-by'))}]`;
+    return genBasicXPath(el);
+  }
+
+  function genSalesforceLWCXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (safeAttr(el,'data-id')) return `//${tag}[@data-id=${xpathLiteral(safeAttr(el,'data-id'))}]`;
+    if (safeAttr(el,'data-field')) return `//${tag}[@data-field=${xpathLiteral(safeAttr(el,'data-field'))}]`;
+    if (/^lightning-/.test(tag)){
+      return `(//${tag}[@data-id or @data-field or @data-key or @title or @data-qa-locator])[1]` +
+             `| ancestor-or-self::${tag}//input | ancestor-or-self::${tag}//button`;
+    }
+    return genSalesforceXPath(el);
+  }
+
+  function genSalesforceAuraXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (safeAttr(el,'data-aura-class')) return `//${tag}[@data-aura-class=${xpathLiteral(safeAttr(el,'data-aura-class'))}]`;
+    if (safeAttr(el,'data-aura-rendered-by')) return `//${tag}[@data-aura-rendered-by=${xpathLiteral(safeAttr(el,'data-aura-rendered-by'))}]`;
+    return genSalesforceXPath(el);
+  }
+
+  function genPegaXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (safeAttr(el,'data-test-id')) return `//${tag}[@data-test-id=${xpathLiteral(safeAttr(el,'data-test-id'))}]`;
+    if (safeAttr(el,'data-node-id')) return `//${tag}[@data-node-id=${xpathLiteral(safeAttr(el,'data-node-id'))}]`;
+    if (safeAttr(el,'data-ctl')) return `//${tag}[@data-ctl=${xpathLiteral(safeAttr(el,'data-ctl'))}]`;
+    if (safeAttr(el,'role') === 'button') return `//${tag}[@role='button']`;
+    return genBasicXPath(el);
+  }
+
+  // -------------------- CHOOSER: bestXPath --------------------
+  function firstNonEmpty(){
+    for (let i=0;i<arguments.length;i++){
+      const v = arguments[i];
+      if (typeof v === 'string' && v.trim()) return v;
+    }
+    return null;
+  }
+
+  function bestXPath(el){
+    try {
+      const lwc = genSalesforceLWCXPath(el);
+      const aura = genSalesforceAuraXPath(el);
+      const sfg = genSalesforceXPath(el);
+      const pega = genPegaXPath(el);
+      const axes = genAxesXPath(el);
+      const fnc  = genFunctionXPath(el);
+      const wild = genWildcardXPath(el);
+      const basic= genBasicXPath(el);
+      return firstNonEmpty(lwc, aura, sfg, pega, axes, fnc, wild, basic);
+    } catch(e){
+      return genBasicXPath(el);
+    }
+  }
+
+  // -------------------- HIGHIGHTING (shadow roots & frames) --------------------
+  function evaluateXPathInRoot(xpath, rootNode){
+    try {
+      const doc = (rootNode && rootNode.ownerDocument) ? rootNode.ownerDocument : (rootNode && rootNode.nodeType ? rootNode : document);
+      const res = doc.evaluate(xpath, rootNode, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      return res && res.singleNodeValue ? res.singleNodeValue : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function findInShadowRoots(xpath, startRoot){
+    startRoot = startRoot || document;
+    const walker = (root)=>{
+      try {
+        const found = evaluateXPathInRoot(xpath, root);
+        if(found) return found;
+      } catch(e){ }
+      const nodes = (root.querySelectorAll) ? root.querySelectorAll('*') : [];
+      for (let i = 0; i < nodes.length; i++){
+        const n = nodes[i];
+        if (n.shadowRoot){
+          const f = findInShadowRoots(xpath, n.shadowRoot);
+          if (f) return f;
+        }
+      }
+      return null;
+    };
+    return walker(startRoot);
+  }
+
+  function findInIframes(xpath, win){
+    win = win || window;
+    try {
+      const found = evaluateXPathInRoot(xpath, win.document);
+      if (found) return {el: found, win: win};
+
+      const sf = findInShadowRoots(xpath, win.document);
+      if (sf) return {el: sf, win: win};
+
+      const frames = win.document.querySelectorAll ? win.document.querySelectorAll('iframe, frame') : [];
+      for (let i = 0; i < frames.length; i++){
+        const fr = frames[i];
+        try {
+          const cw = fr.contentWindow;
+          if (!cw) continue;
+          const inner = findInIframes(xpath, cw);
+          if (inner && inner.el) return inner;
+        } catch (e){
+          continue;
+        }
+      }
+    } catch (e){}
+    return null;
+  }
+
+  function transientHighlightElement(el, options){
+    if(!el || !el.style) return;
+    options = options || {};
+    const color = options.color || 'rgba(255,165,0,0.55)';
+    const outlineColor = options.outline || 'rgba(255,165,0,0.95)';
+    const orig = {
+      boxShadow: el.style.boxShadow || '',
+      outline: el.style.outline || '',
+      zIndex: el.style.zIndex || '',
+      transition: el.style.transition || ''
+    };
+    try { el.style.transition = 'box-shadow 0.15s ease'; } catch(e){}
+    try { el.style.boxShadow = `0 0 0 4px ${color}, inset 0 0 0 1px #fff`; } catch(e){}
+    try { el.style.outline = `2px solid ${outlineColor}`; } catch(e){}
+    try { el.style.zIndex = '2147483647'; } catch(e){}
+    try { el.scrollIntoView({behavior:'auto', block:'center', inline:'center'}); } catch(e){}
+    const timeout = (options.duration || 3500);
+    setTimeout(() => {
+      try { el.style.boxShadow = orig.boxShadow; } catch(e){}
+      try { el.style.outline = orig.outline; } catch(e){}
+      try { el.style.zIndex = orig.zIndex; } catch(e){}
+      try { el.style.transition = orig.transition; } catch(e){}
+    }, timeout);
+  }
+
+  NS.tryHighlightByXPath = function(xpath){
+    if(!xpath || typeof xpath !== 'string'){ dbg('tryHighlightByXPath needs xpath'); return false; }
+
+    try {
+      const direct = evaluateXPathInRoot(xpath, document);
+      if (direct){
+        transientHighlightElement(direct);
+        dbg('Highlighted in main document:', direct);
+        return true;
+      }
+    } catch(e){}
+
+    try {
+      const sf = findInShadowRoots(xpath, document);
+      if (sf){
+        transientHighlightElement(sf);
+        dbg('Highlighted inside shadowRoot:', sf);
+        return true;
+      }
+    } catch(e){}
+
+
+----------_!$+$/$?$!$)$9#;#;)#9#;$!
+
+
+
+
 
 /**
  * Find a human label/text for a form element.
