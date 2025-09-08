@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+  <meta http-equiv="CONTENT-TYPE" content="text/html; charset=UTF-8">
+  <title>Hello, World!</title>
+</head>
+<body>
+  <script>
+/**
+ * Adhyan — Full single-file replacement
+ * Drop this entire <script> block into your Adhyan HTML replacing previous JS.
+ *
+ * This file includes inline Tanglish comments function-by-function and line-level
+ * where helpful. It's defensive and tries not to rely on host helpers, but if
+ * you have helpers (generateCssSelector, generatePlaywrightSelectors, bestLabelFor)
+ * they will be used.
+ */
+(function AdhyanFullPatch(){
+  // Namespace to expose API
+  const NS = window.AdhyPatch = window.AdhyPatch || {};
+  NS.DEBUG = false;
+  function dbg(...a){ if(NS.DEBUG) console.debug('[AdhyPatch]', ...a); }
+
+  // -------------------- SAFE UTILITIES --------------------
+  // Tanglish: "String/attr safe helpers — XPath literal builder, safeAttr"
+  function xpathLiteral(s){
+    s = String(s || '');
+    // If no double quote in text, wrap in double quotes
+    if (s.indexOf('"') === -1) return `"${s}"`;
+    // else if no single quote, wrap in single quotes
+    if (s.indexOf("'") === -1) return `'${s}'`;
+    // otherwise build concat("part","'", "part2") for XPath
+    const parts = s.split('"');
+    const out = [];
+    for (let i = 0; i < parts.length; i++){
+      if (parts[i] !== '') out.push(`"${parts[i].replace(/\\/g,'\\\\')}"`); // escape backslashes
+      if (i < parts.length - 1) out.push(`'"'`); // literal double quote segment
+    }
+    return `concat(${out.join(',')})`;
+  }
+
+  function safeAttr(el, name){
+    try { return el && el.getAttribute ? el.getAttribute(name) : null; } catch(e){ return null; }
+  }
+
+  // -------------------- FALLBACK HELPERS (if host missing) --------------------
+  // Tanglish: "Host la generateCssSelector or generatePlaywrightSelectors illa na, naive fallback provide panrom."
+  if (typeof window.generateCssSelector !== 'function'){
+    window.generateCssSelector = function(el){
+      try {
+        if(!el || !el.tagName) return '';
+        if(el.id) return `#${el.id}`;
+        const cls = (el.className || '').toString().split(/\s+/).filter(Boolean)[0];
+        if(cls) return `${el.tagName.toLowerCase()}.${cls}`;
+        const name = safeAttr(el,'name');
+        if(name) return `${el.tagName.toLowerCase()}[name="${name}"]`;
+        return el.tagName.toLowerCase();
+      } catch(e){ return ''; }
+    };
+  }
+  if (typeof window.generatePlaywrightSelectors !== 'function'){
+    window.generatePlaywrightSelectors = function(el){
+      return { css: window.generateCssSelector(el) || '', text: (el && (el.innerText || el.textContent) || '').trim() };
+    };
+  }
+  if (typeof window.bestLabelFor !== 'function'){
+    window.bestLabelFor = function(el){
+      try {
+        if(!el) return null;
+        const id = el.id;
+        if (id && document.querySelector){
+          const lab = document.querySelector(`label[for="${id.replace(/([#.;,[\\]()>+~=:*"\\\\])/g,'\\\\$1')}"]`);
+          if (lab && lab.textContent) return lab.textContent.trim();
+        }
+        const lp = el.closest ? el.closest('label') : null;
+        if(lp && lp.textContent) return lp.textContent.trim();
+      } catch(e){}
+      return null;
+    };
+  }
+
+  // -------------------- UI TOAST (small notification) --------------------
+  function showToast(msg, ms){
+    ms = ms || 1800;
+    try {
+      if (typeof window.showToast === 'function'){ window.showToast(msg); return; }
+      let t = document.getElementById('__adhy_toast');
+      if(!t){
+        t = document.createElement('div');
+        t.id = '__adhy_toast';
+        t.style.cssText = 'position:fixed; right:16px; bottom:16px; background:rgba(0,0,0,0.78); color:#fff; padding:8px 12px; border-radius:8px; z-index:2147483650; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;';
+        document.body.appendChild(t);
+      }
+      t.textContent = msg;
+      t.style.opacity = '1';
+      clearTimeout(t._t);
+      t._t = setTimeout(()=>{ try{ t.style.opacity = '0'; } catch(e){} }, ms);
+    } catch(e){ console.log('toast', msg); }
+  }
+
+  // -------------------- CLIPBOARD HELPER --------------------
+  // Tanglish: "Clipboard copy — modern API try pannum, illa fallback textarea + execCommand"
+  async function copyToClipboard(text){
+    try {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        await navigator.clipboard.writeText(text);
+        showToast('Copied to clipboard');
+        return true;
+      }
+    } catch(e){ dbg('clipboard write failed', e); }
+    // fallback
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.left = '-9999px'; ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      const ok = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(ta);
+      showToast(ok ? 'Copied to clipboard' : 'Copy fallback used');
+      return !!ok;
+    } catch(e){ alert('Please copy manually:\n\n' + text); return false; }
+  }
+  NS.copyToClipboard = copyToClipboard;
+
+  // -------------------- SKIP / DEDUPE / LABEL helpers --------------------
+  // Tanglish: "Which elements to skip — hidden/disabled/readonly/no-label and framework noise"
+  function isHiddenByInlineStyle(el){
+    const s = (safeAttr(el,'style')||'').toLowerCase();
+    return /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|pointer-events\s*:\s*none/.test(s);
+  }
+  function hasUsefulLabel(el){
+    if(!el) return false;
+    if (safeAttr(el,'aria-label')) return true;
+    if (safeAttr(el,'placeholder')) return true;
+    if (safeAttr(el,'name')) return true;
+    const id = el.id;
+    if (id){
+      try {
+        const sel = `label[for="${id.replace(/([#.;,[\\]()>+~=:*"\\\\])/g,'\\\\$1')}"]`;
+        if ((window.CURRENT_DOC || document).querySelector(sel)) return true;
+      } catch(e){}
+    }
+    const t = (el.textContent || '').trim();
+    return t.length > 0;
+  }
+  function isSFNoise(el){
+    const cls = el.className || '';
+    if(/\bslds-assistive-text\b/.test(cls)) return true;
+    if(/\bslds-hide\b/.test(cls)) return true;
+    if(safeAttr(el,'role') === 'presentation') return true;
+    return false;
+  }
+  function isPegaNoise(el){
+    const ctl = safeAttr(el,'data-ctl') || '';
+    if (ctl === 'Tooltip') return true;
+    if (ctl === 'Icon' && !el.hasAttribute('role') && !el.onclick) return true;
+    return false;
+  }
+
+  // Tanglish: "Final shouldSkip check called everywhere"
+  function shouldSkip(el){
+    if(!el || el.nodeType !== 1) return true;
+    const tag = el.tagName.toLowerCase();
+    if (el.hasAttribute('hidden')) return true;
+    if (safeAttr(el,'aria-hidden') === 'true') return true;
+    if (isHiddenByInlineStyle(el)) return true;
+    if (el.hasAttribute('disabled') || safeAttr(el,'aria-disabled') === 'true') return true;
+    if (el.hasAttribute('readonly')) return true;
+    if (tag === 'input' && (safeAttr(el,'type')||'').toLowerCase() === 'hidden') return true;
+    if (tag === 'a' && (!el.hasAttribute('href') || safeAttr(el,'href') === '#')) return true;
+    if (isSFNoise(el)) return true;
+    if (isPegaNoise(el)) return true;
+    if (!hasUsefulLabel(el)) return true;
+    return false;
+  }
+
+  // Label fetcher — uses bestLabelFor if present
+  function getLabelFor(el){
+    try { if(typeof window.bestLabelFor === 'function') return window.bestLabelFor(el); } catch(e){}
+    const id = el && el.getAttribute ? el.getAttribute('id') : null;
+    if (id) {
+      try {
+        const sel = `label[for="${id.replace(/([#.;,[\\]()>+~=:*"\\\\])/g,'\\\\$1')}"]`;
+        const lab = (window.CURRENT_DOC || document).querySelector(sel);
+        if (lab && lab.textContent) return lab.textContent.trim();
+      } catch(e){}
+    }
+    const parentLabel = el && el.closest ? el.closest('label') : null;
+    if (parentLabel && parentLabel.textContent) return parentLabel.textContent.trim();
+    return null;
+  }
+  function getSmartAnchorTextSafe(el){
+    try { if(typeof window.getSmartAnchorText === 'function') return window.getSmartAnchorText(el) || ''; } catch(e){}
+    const l = getLabelFor(el);
+    return l || (safeAttr(el,'aria-label') || '').trim();
+  }
+
+  // -------------------- COLLECTOR --------------------
+  // Tanglish: "Collect candidate elements (broad query), early skip, dedupe by signature"
+  function collectCandidateElements(doc){
+    doc = doc || document;
+    const selectors = [
+      'input:not([type="hidden"])','button','a','select','textarea',
+      '[role="button"]','span[role="button"]',
+      '[data-ctl]','[data-qa-locator]','[data-aura-class]','[data-aura-rendered-by]','[data-key]','[data-id]',
+      'lightning-input','lightning-button','lightning-combobox','lightning-textarea',
+      'lightning-record-edit-form','lightning-tab','lightning-input-field','lightning-formatted-text',
+      'force-record-view','force-input','force-button','force-lookup','force-list-view'
+    ];
+    let basics = [];
+    try { basics = Array.from(doc.querySelectorAll(selectors.join(','))); } catch(e){ basics = []; }
+    let filtered = basics.filter(el => !shouldSkip(el));
+    const seen = new Set();
+    filtered = filtered.filter(el => {
+      const anchor = getSmartAnchorTextSafe(el);
+      const sig = [
+        el.tagName.toLowerCase(),
+        el.id || '',
+        safeAttr(el,'name') || '',
+        safeAttr(el,'data-qa-locator') || '',
+        safeAttr(el,'data-ctl') || '',
+        safeAttr(el,'data-key') || '',
+        safeAttr(el,'data-id') || '',
+        anchor || ''
+      ].join('|');
+      if (seen.has(sig)) return false;
+      seen.add(sig);
+      return true;
+    });
+    return filtered;
+  }
+
+  // -------------------- GENERATORS: Basic / Wildcard / Axes / Function --------------------
+  // Tanglish: "Multiple strategies to generate XPaths — prioritized later"
+  function genBasicXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (el.id) return `//*[@id=${xpathLiteral(el.id)}]`;
+    const name = safeAttr(el,'name');
+    if (name) return `//${tag}[@name=${xpathLiteral(name)}]`;
+    const label = getLabelFor(el);
+    if (label) return `//${tag}[contains(normalize-space(.), ${xpathLiteral(label.trim())})]`;
+    const cls = (safeAttr(el,'class')||'').trim().split(/\s+/).filter(Boolean)[0];
+    if (cls) return `//${tag}[contains(concat(' ', normalize-space(@class), ' '), ${xpathLiteral(' ' + cls + ' ')})]`;
+    const parent = el.parentElement;
+    if (!parent) return `//${tag}[1]`;
+    const same = Array.from(parent.children).filter(x => x.tagName === el.tagName);
+    const idx = same.indexOf(el) + 1;
+    return `${genBasicXPath(parent)}/${tag}[${idx}]`;
+  }
+
+  function genWildcardXPath(el){
+    if(!el) return '';
+    if (el.id) return `//*[@id=${xpathLiteral(el.id)}]`;
+    const name = safeAttr(el,'name');
+    if (name) return `//*[@name=${xpathLiteral(name)}]`;
+    const label = getLabelFor(el);
+    if (label) return `//*[contains(normalize-space(.), ${xpathLiteral(label.trim())})]`;
+    const cls = (safeAttr(el,'class')||'').trim().split(/\s+/).filter(Boolean)[0];
+    if (cls) return `//*[contains(concat(' ', normalize-space(@class), ' '), ${xpathLiteral(' ' + cls + ' ')})]`;
+    return genBasicXPath(el);
+  }
+
+  function genAxesXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    const id = safeAttr(el,'id');
+    if (id) return `//label[@for=${xpathLiteral(id)}]/following::${tag}[1]`;
+    const al = safeAttr(el,'aria-labelledby');
+    if (al) return `//*[@id=${xpathLiteral(al.split(/\s+/)[0])}]/following::${tag}[1]`;
+    const label = getLabelFor(el);
+    if (label) return `//label[contains(normalize-space(.), ${xpathLiteral(label.trim())})]/following::${tag}[1]`;
+    return genBasicXPath(el);
+  }
+
+  function genFunctionXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    const ph = safeAttr(el,'placeholder');
+    if (ph && String(ph).trim()) return `//${tag}[contains(@placeholder, ${xpathLiteral(ph)})]`;
+    const ti = safeAttr(el,'title');
+    if (ti && String(ti).trim()) return `//${tag}[contains(@title, ${xpathLiteral(ti)})]`;
+    const alt = safeAttr(el,'alt');
+    if (alt && String(alt).trim()) return `//${tag}[contains(@alt, ${xpathLiteral(alt)})]`;
+    return genBasicXPath(el);
+  }
+
+  // -------------------- SALESFORCE / LWC / AURA / PEGA specializers --------------------
+  function genSalesforceXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (safeAttr(el,'data-qa-locator')) return `//${tag}[@data-qa-locator=${xpathLiteral(safeAttr(el,'data-qa-locator'))}]`;
+    if (safeAttr(el,'data-key')) return `//${tag}[@data-key=${xpathLiteral(safeAttr(el,'data-key'))}]`;
+    if (safeAttr(el,'title')) return `//${tag}[@title=${xpathLiteral(safeAttr(el,'title'))}]`;
+    if (safeAttr(el,'data-aura-rendered-by')) return `//${tag}[@data-aura-rendered-by=${xpathLiteral(safeAttr(el,'data-aura-rendered-by'))}]`;
+    return genBasicXPath(el);
+  }
+  function genSalesforceLWCXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (safeAttr(el,'data-id')) return `//${tag}[@data-id=${xpathLiteral(safeAttr(el,'data-id'))}]`;
+    if (safeAttr(el,'data-field')) return `//${tag}[@data-field=${xpathLiteral(safeAttr(el,'data-field'))}]`;
+    if (/^lightning-/.test(tag)){
+      return `(//${tag}[@data-id or @data-field or @data-key or @title or @data-qa-locator])[1]` +
+             `| ancestor-or-self::${tag}//input | ancestor-or-self::${tag}//button`;
+    }
+    return genSalesforceXPath(el);
+  }
+  function genSalesforceAuraXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (safeAttr(el,'data-aura-class')) return `//${tag}[@data-aura-class=${xpathLiteral(safeAttr(el,'data-aura-class'))}]`;
+    if (safeAttr(el,'data-aura-rendered-by')) return `//${tag}[@data-aura-rendered-by=${xpathLiteral(safeAttr(el,'data-aura-rendered-by'))}]`;
+    return genSalesforceXPath(el);
+  }
+  function genPegaXPath(el){
+    if(!el) return '';
+    const tag = el.tagName.toLowerCase();
+    if (safeAttr(el,'data-test-id')) return `//${tag}[@data-test-id=${xpathLiteral(safeAttr(el,'data-test-id'))}]`;
+    if (safeAttr(el,'data-node-id')) return `//${tag}[@data-node-id=${xpathLiteral(safeAttr(el,'data-node-id'))}]`;
+    if (safeAttr(el,'data-ctl')) return `//${tag}[@data-ctl=${xpathLiteral(safeAttr(el,'data-ctl'))}]`;
+    if (safeAttr(el,'role') === 'button') return `//${tag}[@role='button']`;
+    return genBasicXPath(el);
+  }
+
+  // -------------------- CHOOSER: bestXPath --------------------
+  // Tanglish: "Which XPath to prefer for this element — LWC > Aura > SF > Pega > Axes > Function > Wild > Basic"
+  function firstNonEmpty(){
+    for (let i = 0; i < arguments.length; i++){
+      const v = arguments[i];
+      if (typeof v === 'string' && v.trim()) return v;
+    }
+    return null;
+  }
+  function bestXPath(el){
+    try {
+      const lwc = genSalesforceLWCXPath(el);
+      const aura = genSalesforceAuraXPath(el);
+      const sfg = genSalesforceXPath(el);
+      const pega = genPegaXPath(el);
+      const axes = genAxesXPath(el);
+      const fnc  = genFunctionXPath(el);
+      const wild = genWildcardXPath(el);
+      const basic= genBasicXPath(el);
+      return firstNonEmpty(lwc, aura, sfg, pega, axes, fnc, wild, basic);
+    } catch(e){ return genBasicXPath(el); }
+  }
+
+  // -------------------- HIGHLIGHTING (shadow roots & frames) --------------------
+  // Tanglish: "Try to find element by XPath across document, shadow roots and iframes and then transiently highlight"
+  function evaluateXPathInRoot(xpath, rootNode){
+    try {
+      const doc = (rootNode && rootNode.ownerDocument) ? rootNode.ownerDocument : (rootNode && rootNode.nodeType ? rootNode : document);
+      const res = doc.evaluate(xpath, rootNode, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      return res && res.singleNodeValue ? res.singleNodeValue : null;
+    } catch(e){ return null; }
+  }
+  function findInShadowRoots(xpath, startRoot){
+    startRoot = startRoot || document;
+    const walker = (root)=>{
+      try {
+        const found = evaluateXPathInRoot(xpath, root);
+        if(found) return found;
+      } catch(e){}
+      const nodes = (root.querySelectorAll) ? root.querySelectorAll('*') : [];
+      for (let i = 0; i < nodes.length; i++){
+        const n = nodes[i];
+        if (n.shadowRoot){
+          const f = findInShadowRoots(xpath, n.shadowRoot);
+          if (f) return f;
+        }
+      }
+      return null;
+    };
+    return walker(startRoot);
+  }
+  function findInIframes(xpath, win){
+    win = win || window;
+    try {
+      const found = evaluateXPathInRoot(xpath, win.document);
+      if (found) return {el: found, win: win};
+      const sf = findInShadowRoots(xpath, win.document);
+      if (sf) return {el: sf, win: win};
+      const frames = win.document.querySelectorAll ? win.document.querySelectorAll('iframe, frame') : [];
+      for (let i = 0; i < frames.length; i++){
+        const fr = frames[i];
+        try {
+          const cw = fr.contentWindow;
+          if (!cw) continue;
+          const inner = findInIframes(xpath, cw);
+          if (inner && inner.el) return inner;
+        } catch (e){ continue; }
+      }
+    } catch(e){}
+    return null;
+  }
+  function transientHighlightElement(el, options){
+    if(!el || !el.style) return;
+    options = options || {};
+    const color = options.color || 'rgba(255,165,0,0.55)';
+    const outlineColor = options.outline || 'rgba(255,165,0,0.95)';
+    const orig = { boxShadow: el.style.boxShadow || '', outline: el.style.outline || '', zIndex: el.style.zIndex || '' };
+    try { el.style.boxShadow = `0 0 0 4px ${color}, inset 0 0 0 1px #fff`; } catch(e){}
+    try { el.style.outline = `2px solid ${outlineColor}`; } catch(e){}
+    try { el.style.zIndex = '2147483647'; } catch(e){}
+    try { el.scrollIntoView({behavior:'auto', block:'center', inline:'center'}); } catch(e){}
+    setTimeout(()=>{ try{ el.style.boxShadow = orig.boxShadow; el.style.outline = orig.outline; el.style.zIndex = orig.zIndex; } catch(e){} }, (options.duration || 3500));
+  }
+  NS.tryHighlightByXPath = function(xpath){
+    if(!xpath || typeof xpath !== 'string'){ dbg('tryHighlightByXPath needs xpath'); return false; }
+    try {
+      const direct = evaluateXPathInRoot(xpath, document);
+      if (direct){ transientHighlightElement(direct); dbg('Highlighted in main doc'); return true; }
+    } catch(e){}
+    try {
+      const sf = findInShadowRoots(xpath, document);
+      if (sf){ transientHighlightElement(sf); dbg('Highlighted in shadow'); return true; }
+    } catch(e){}
+    try {
+      const preview = document.getElementById('preview') || document.querySelector('iframe#preview');
+      if(preview){
+        try {
+          const doc = preview.contentDocument;
+          if(doc){
+            const d = evaluateXPathInRoot(xpath, doc);
+            if(d){ transientHighlightElement(d, {color:'rgba(0,150,255,0.45)', outline:'rgba(0,120,255,0.9)'}); return true; }
+            const sfs = findInShadowRoots(xpath, doc);
+            if(sfs){ transientHighlightElement(sfs, {color:'rgba(0,150,255,0.45)', outline:'rgba(0,120,255,0.9)'}); return true; }
+          }
+        } catch(err){ dbg('preview iframe not accessible'); }
+      }
+    } catch(e){}
+    try {
+      const res = findInIframes(xpath, window);
+      if (res && res.el){ transientHighlightElement(res.el, {color:'rgba(0,150,255,0.45)', outline:'rgba(0,120,255,0.9)'}); return true; }
+    } catch(e){}
+    dbg('not found for xpath', xpath);
+    return false;
+  };
+
+  NS.tryHighlightAllByXPath = function(xpath){
+    if(!xpath || typeof xpath !== 'string') return 0;
+    let count = 0;
+    try {
+      const it = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
+      let n;
+      while((n = it.iterateNext())){ transientHighlightElement(n, {color:'rgba(0,200,100,0.35)', outline:'rgba(0,150,100,0.9)', duration:4500}); count++; }
+    } catch(e){}
+    try {
+      const res = findInIframes(xpath, window);
+      if (res && res.el){ transientHighlightElement(res.el, {color:'rgba(0,150,255,0.45)', outline:'rgba(0,120,255,0.9)', duration:4500}); count++; }
+    } catch(e){}
+    return count;
+  };
+
+  // -------------------- TEMPLATE UTIL --------------------
+  // Tanglish: "Convert xpath to template with %s placeholders for literals and indices"
+  function toTemplate(xpath){
+    if (!xpath || typeof xpath !== 'string') return xpath || '';
+    let s = xpath.replace(/(["'])(?:(?=(\\?))\2.)*?\1/g, (m)=>{
+      if (m.length <= 2) return m;
+      return m[0] + '%s' + m[m.length-1];
+    });
+    s = s.replace(/\[(\d+)\]/g, "[%s]");
+    s = s.replace(/\s+/g, ' ').trim();
+    return s;
+  }
+
+  // -------------------- RENDERERS: fillLocatorList + printFillLocatorList --------------------
+  // Tanglish: "Render UI list from window.CURRENT_LOCATORS — supports copy, template, download, highlight on click"
+  function pickValue(row, panel){
+    panel = panel || 'basic';
+    if (row.xpaths && row.xpaths[panel]) return row.xpaths[panel];
+    if (panel === 'css') return row.css || row.cssSelector || '';
+    if (panel === 'playwright') {
+      if (!row.playwright) return '';
+      if (typeof row.playwright === 'string') return row.playwright;
+      try { return JSON.stringify(row.playwright); } catch(e){ return ''; }
+    }
+    if (row[panel]) return row[panel];
+    return (row.xpaths && (row.xpaths.sf || row.xpaths.pega || row.xpaths.basic)) || row.sf || row.pega || row.basic || row.css || '';
+  }
+
+  NS.fillLocatorList = function(panel = 'basic'){
+    panel = panel || 'basic';
+    const data = Array.isArray(window.CURRENT_LOCATORS) ? window.CURRENT_LOCATORS : [];
+
+    let container = document.getElementById('locator-list');
+    if (!container){
+      container = document.createElement('div');
+      container.id = 'locator-list';
+      container.style.cssText = 'margin:12px 0; overflow:auto; max-height:55vh; border:1px solid #ddd; border-radius:8px; background:#fff;padding:8px;';
+      document.body.appendChild(container);
+    }
+
+    const rows = data.map((r, i) => ({
+      id: r.id || `E${i+1}`,
+      tag: r.tag || '',
+      text: (r.text || r.label || '').toString(),
+      framework: r.framework || '',
+      raw: pickValue(r, panel) || ''
+    })).filter(r => String(r.raw).trim().length > 0);
+
+    const tableHTML = `
+      <table style="width:100%; border-collapse:collapse; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;">
+        <thead>
+          <tr style="background:#f7f7f7; position:sticky; top:0;">
+            <th style="width:36px; text-align:center; padding:8px; border-bottom:1px solid #e5e5e5;">✓</th>
+            <th style="text-align:left; padding:8px; border-bottom:1px solid #e5e5e5;">ID</th>
+            <th style="text-align:left; padding:8px; border-bottom:1px solid #e5e5e5;">Tag</th>
+            <th style="text-align:left; padding:8px; border-bottom:1px solid #e5e5e5;">Label</th>
+            <th style="text-align:left; padding:8px; border-bottom:1px solid #e5e5e5;">Framework</th>
+            <th style="text-align:left; padding:8px; border-bottom:1px solid #e5e5e5;">${panel.toUpperCase()}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((r, idx) => `
+            <tr data-row="${idx}" style="cursor:default;">
+              <td style="text-align:center; padding:8px; border-bottom:1px solid #f0f0f0;">
+                <input class="loc-check" type="checkbox">
+              </td>
+              <td style="padding:8px; border-bottom:1px solid #f0f0f0;">${r.id}</td>
+              <td style="padding:8px; border-bottom:1px solid #f0f0f0;">${r.tag}</td>
+              <td style="padding:8px; border-bottom:1px solid #f0f0f0;">${r.text.replace(/</g,'&lt;')}</td>
+              <td style="padding:8px; border-bottom:1px solid #f0f0f0;">${r.framework}</td>
+              <td class="loc-val" style="padding:8px; border-bottom:1px solid #f0f0f0; font-family:ui-monospace, Menlo, Consolas, monospace;">
+                <div style="white-space:pre-wrap; word-break:break-word;">${String(r.raw).replace(/</g,'&lt;')}</div>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+    container.innerHTML = tableHTML;
+
+    // toolbar ensure
+    let bar = document.getElementById('locator-toolbar');
+    if (!bar){
+      bar = document.createElement('div');
+      bar.id = 'locator-toolbar';
+      bar.style.cssText = 'display:flex; gap:12px; align-items:center; margin:10px 0;';
+      bar.innerHTML = `
+        <label style="user-select:none;"><input type="checkbox" id="loc-sel-all"> Select all</label>
+        <label style="user-select:none;"><input type="checkbox" id="loc-template"> Template (%s)</label>
+        <button id="loc-copy" style="padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#f6f6f6; cursor:pointer;">Copy selected</button>
+        <button id="loc-download" style="padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#f6f6f6; cursor:pointer;">Download selected</button>
+        <span id="loc-count" style="margin-left:auto; color:#555;"></span>
+      `;
+      container.parentNode.insertBefore(bar, container);
+    } else {
+      const countEl = document.getElementById('loc-count'); if(countEl) countEl.textContent = '';
+    }
+
+    const countEl = document.getElementById('loc-count'); if(countEl) countEl.textContent = `${rows.length} locators • panel: ${panel}`;
+    const selAll = document.getElementById('loc-sel-all');
+    const tmpl   = document.getElementById('loc-template');
+    const btnCopy= document.getElementById('loc-copy');
+    const btnDown= document.getElementById('loc-download');
+    const checks = Array.from(container.querySelectorAll('.loc-check'));
+    selAll.onchange = () => { checks.forEach(c => c.checked = selAll.checked); };
+
+    tmpl.onchange = () => {
+      const useTpl = tmpl.checked;
+      container.querySelectorAll('tbody tr').forEach(tr => {
+        const i = Number(tr.getAttribute('data-row'));
+        const val = useTpl ? toTemplate(rows[i].raw) : rows[i].raw;
+        tr.querySelector('.loc-val > div').textContent = val;
+      });
+    };
+
+    btnCopy.onclick = async () => {
+      const useTpl = tmpl.checked;
+      const selected = [];
+      container.querySelectorAll('tbody tr').forEach(tr => {
+        const cb = tr.querySelector('.loc-check');
+        if (cb && cb.checked){
+          const i = Number(tr.getAttribute('data-row'));
+          selected.push(useTpl ? toTemplate(rows[i].raw) : rows[i].raw);
+        }
+      });
+      const text = selected.join('\n');
+      const ok = await copyToClipboard(text);
+      if (ok) showToast(`Copied ${selected.length} locator(s)`); else alert('Copy failed — please copy manually');
+    };
+
+    btnDown.onclick = () => {
+      const useTpl = tmpl.checked;
+      const selected = [];
+      container.querySelectorAll('tbody tr').forEach(tr => {
+        const cb = tr.querySelector('.loc-check');
+        if (cb && cb.checked){
+          const i = Number(tr.getAttribute('data-row'));
+          selected.push(useTpl ? toTemplate(rows[i].raw) : rows[i].raw);
+        }
+      });
+      const blob = new Blob([selected.join('\n')], {type:'text/plain'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `locators_${panel}${useTpl ? '_template' : ''}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+
+    // Row click -> highlight + copy
+    container.querySelectorAll('tbody tr').forEach((tr, idx) => {
+      tr.addEventListener('click', async (ev) => {
+        if (ev.target && ev.target.classList && ev.target.classList.contains('loc-check')) return;
+        const valDiv = tr.querySelector('.loc-val > div'); if(!valDiv) return;
+        const val = valDiv.textContent || ''; let xpath = val || '';
+        if (!xpath && Array.isArray(window.CURRENT_LOCATORS) && window.CURRENT_LOCATORS[idx]) xpath = pickValue(window.CURRENT_LOCATORS[idx], panel);
+        if (xpath){
+          NS.tryHighlightByXPath(xpath);
+          await copyToClipboard(xpath);
+          showToast('Copied & highlighted');
+        } else showToast('No locator to copy');
+      });
+    });
+
+    return container;
+  };
+
+  NS.printFillLocatorList = function(panel, containerId){
+    panel = panel || 'basic';
+    containerId = containerId || 'locator-dump';
+    const data = Array.isArray(window.CURRENT_LOCATORS) ? window.CURRENT_LOCATORS : [];
+    let box = document.getElementById(containerId);
+    if (!box){
+      box = document.createElement('div');
+      box.id = containerId;
+      box.style.cssText = 'margin:16px 0; padding:12px; border:1px solid #ddd; border-radius:10px; background:#fff;';
+      document.body.appendChild(box);
+    }
+    const rows = data.map((r, i) => ({
+      id: r.id || `E${i+1}`,
+      tag: r.tag || '',
+      text: (r.text || '').toString(),
+      framework: r.framework || '',
+      val: pickValue(r, panel) || ''
+    })).filter(r => r.val && String(r.val).trim().length > 0);
+
+    const table = `
+      <div style="font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial">
+        <div style="margin-bottom:8px;">
+          <strong>Standalone Locator Dump</strong> — panel: <code>${panel}</code> — count: <strong>${rows.length}</strong>
+        </div>
+        <table style="width:100%; border-collapse:collapse;">
+          <thead>
+            <tr style="background:#f7f7f7">
+              <th style="text-align:left;padding:8px;border-bottom:1px solid #e5e5e5;">ID</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid #e5e5e5;">Tag</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid #e5e5e5;">Label</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid #e5e5e5;">Framework</th>
+              <th style="text-align:left;padding:8px;border-bottom:1px solid #e5e5e5;">${panel.toUpperCase()}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>
+                <td style="padding:8px;border-bottom:1px solid #f0f0f0;">${r.id}</td>
+                <td style="padding:8px;border-bottom:1px solid #f0f0f0;">${r.tag}</td>
+                <td style="padding:8px;border-bottom:1px solid #f0f0f0;">${r.text.replace(/</g,'&lt;')}</td>
+                <td style="padding:8px;border-bottom:1px solid #f0f0f0;">${r.framework}</td>
+                <td style="padding:8px;border-bottom:1px solid #f0f0f0;font-family:ui-monospace,Menlo,Consolas,monospace;">
+                  <div style="white-space:pre-wrap;word-break:break-word;">${String(r.val).replace(/</g,'&lt;')}</div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+    box.innerHTML = table;
+    return rows.length;
+  };
+
+  // -------------------- DYNAMIC PICKER --------------------
+  // Tanglish: "Picker overlay lets user click any element and generate template xpaths for it"
+  let pickerState = null;
+  function ensureDynamicPanel(){
+    let toolbar = document.getElementById('locator-toolbar');
+    if(!toolbar){
+      const container = document.getElementById('locator-list') || document.body;
+      toolbar = document.createElement('div'); toolbar.id = 'locator-toolbar';
+      toolbar.style.cssText = 'display:flex; gap:10px; align-items:center; margin:10px 0;';
+      container.parentNode.insertBefore(toolbar, container);
+    }
+    if(toolbar.dataset.dynamicAttached) return toolbar;
+    toolbar.dataset.dynamicAttached = '1';
+
+    const select = document.createElement('select'); select.id = 'dynamic-template-select';
+    select.style.cssText = 'padding:6px;border-radius:6px;border:1px solid #ccc;';
+    const options = [
+      {k:'id', lbl:"//*[@id='%s']"},
+      {k:'data', lbl:"//*[@data-xxx='%s']"},
+      {k:'name', lbl:"//*[@name='%s']"},
+      {k:'aria', lbl:"//*[@aria-label='%s']"},
+      {k:'exact-text', lbl:"//tag[text()='%s']"},
+      {k:'contains-text', lbl:"//tag[contains(normalize-space(.),'%s')]"},
+      {k:'custom', lbl:"Custom"}
+    ];
+    options.forEach(o=>{ const opt=document.createElement('option'); opt.value=o.k; opt.textContent=o.lbl; select.appendChild(opt); });
+
+    const pickerBtn = document.createElement('button'); pickerBtn.id='dynamic-picker-btn'; pickerBtn.textContent='Open Picker';
+    pickerBtn.style.cssText='padding:6px 10px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;';
+    const applyBtn = document.createElement('button'); applyBtn.id='dynamic-apply-btn'; applyBtn.textContent='Apply to selected';
+    applyBtn.style.cssText='padding:6px 10px;border-radius:6px;border:1px solid #ccc;background:#f6f6f6;cursor:pointer;';
+    const preview = document.createElement('input'); preview.id='dynamic-preview'; preview.placeholder='Generated template preview';
+    preview.style.cssText='padding:6px;border-radius:6px;border:1px solid #ddd;min-width:320px;';
+    const copyBtn = document.createElement('button'); copyBtn.id='dynamic-copy-btn'; copyBtn.textContent='Copy';
+    copyBtn.style.cssText='padding:6px 8px;border-radius:6px;border:1px solid #ccc;background:#fff;cursor:pointer;';
+
+    toolbar.appendChild(select); toolbar.appendChild(pickerBtn); toolbar.appendChild(applyBtn); toolbar.appendChild(preview); toolbar.appendChild(copyBtn);
+
+    pickerBtn.addEventListener('click', ()=> openDynamicPicker(select.value, (templates, el) => {
+      preview.value = (templates && templates[0]) || '';
+      toolbar.dataset.lastTemplates = JSON.stringify(templates || []);
+      try { toolbar.dataset.lastPickedElementXPath = bestXPath(el) || ''; } catch(e){}
+    }));
+    copyBtn.addEventListener('click', async ()=>{ const val = preview.value || ''; if(!val) return; await copyToClipboard(val); showToast('Template copied'); });
+    applyBtn.addEventListener('click', ()=>{
+      const last = toolbar.dataset.lastTemplates ? JSON.parse(toolbar.dataset.lastTemplates) : [];
+      if(!last || last.length===0){ alert('No template generated. Use picker first.'); return; }
+      const table = document.getElementById('locator-list'); if(!table){ alert('Locator list not present'); return; }
+      const checks = Array.from(table.querySelectorAll('tbody .loc-check'));
+      const sel = checks.map((c,i)=> ({checked:c.checked, rowIndex:i})).filter(x=>x.checked).map(x=>x.rowIndex);
+      if(sel.length===0){ alert('No rows selected.'); return; }
+      sel.forEach(idx => {
+        const tr = table.querySelector(`tbody tr[data-row="${idx}"]`);
+        if(!tr) return; const valCell = tr.querySelector('.loc-val > div'); if(valCell) valCell.textContent = last[0];
+      });
+      showToast(`Applied template to ${sel.length} row(s)`);
+    });
+
+    return toolbar;
+  }
+
+  function openDynamicPicker(startTemplateKey, onComplete){
+    if(pickerState) return;
+    const overlay = document.createElement('div');
+    overlay.id = 'dynamic-picker-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background: rgba(0,0,0,0.25); z-index:2147483646; cursor:crosshair;';
+    const hint = document.createElement('div');
+    hint.style.cssText = 'position:fixed; top:16px; right:16px; background:#fff; padding:10px 12px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.2); z-index:2147483647;';
+    hint.innerHTML = '<strong>Dynamic Picker</strong><div style="margin-top:6px;">Hover element & click to pick. Press ESC to cancel.</div>';
+    document.body.appendChild(overlay); document.body.appendChild(hint);
+
+    let lastHover = null;
+    function onMouseOver(e){
+      const t = e.target;
+      if(lastHover && lastHover !== t) try { lastHover.style.outline = lastHover._origOutline || ''; } catch(e){}
+      lastHover = t;
+      if(t.closest && t.closest('#dynamic-picker-overlay, #locator-toolbar, #locator-list, #locator-dump')) return;
+      try { lastHover._origOutline = t.style.outline || ''; } catch(e){}
+      try { t.style.outline = '3px solid rgba(0,200,150,0.85)'; } catch(e){}
+      e.stopPropagation();
+    }
+    function onClick(e){
+      e.preventDefault(); e.stopPropagation();
+      const picked = e.target;
+      cleanup();
+      const templates = (typeof window.generateTemplatesForElement === 'function') ? window.generateTemplatesForElement(picked) : generateTemplatesForElement(picked);
+      if(typeof onComplete === 'function') onComplete(templates, picked);
+    }
+    function onKey(e){ if(e.key === 'Escape'){ cleanup(); showToast('Picker canceled'); } }
+    function cleanup(){
+      try { document.removeEventListener('mouseover', onMouseOver, true); document.removeEventListener('click', onClick, true); document.removeEventListener('keydown', onKey, true); } catch(e){}
+      if(lastHover) try { lastHover.style.outline = lastHover._origOutline || ''; } catch(e){}
+      overlay.remove(); hint.remove();
+      pickerState = null;
+    }
+
+    document.addEventListener('mouseover', onMouseOver, true);
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKey, true);
+    pickerState = {overlay, cleanup};
+  }
+  function closeDynamicPicker(){ if(pickerState && typeof pickerState.cleanup === 'function') pickerState.cleanup(); }
+
+  // Simple generator if host doesn't have one
+  function generateTemplatesForElement(el){
+    const out = [];
+    if(!el) return out;
+    if(el.id) out.push(`//*[@id='${el.id}']`);
+    const dataAttrs = Array.from(el.attributes||[]).filter(a=>/^data-/.test(a.name)).map(a=>a.name);
+    if(dataAttrs.length) out.push(`//*[@${dataAttrs[0]}='${el.getAttribute(dataAttrs[0])}']`);
+    if(el.getAttribute && el.getAttribute('name')) out.push(`//*[@name='${el.getAttribute('name')}']`);
+    if(el.getAttribute && el.getAttribute('aria-label')) out.push(`//*[@aria-label='${el.getAttribute('aria-label')}']`);
+    const txt = (el.textContent||'').trim();
+    if(txt) out.push(`//${el.tagName.toLowerCase()}[normalize-space(text())='${txt}']`);
+    if(txt) out.push(`//${el.tagName.toLowerCase()}[contains(normalize-space(.),'${txt}')]`);
+    const cls = (el.getAttribute && (el.getAttribute('class')||'')).split(/\s+/).filter(Boolean)[0];
+    if(cls) out.push(`//${el.tagName.toLowerCase()}[contains(concat(' ', normalize-space(@class), ' '),' ${cls} ')]`);
+    try { const bx = genBasicXPath(el); if(bx) out.push(bx); } catch(e){}
+    return Array.from(new Set(out)).filter(Boolean);
+  }
+
+  // Expose picker helpers on NS/window
+  NS.openDynamicPicker = openDynamicPicker;
+  NS.closeDynamicPicker = closeDynamicPicker;
+  NS.generateTemplatesForElement = generateTemplatesForElement;
+  // Ensure toolbar present
+  try { ensureDynamicPanel(); } catch(e){ dbg('ensureDynamicPanel failed', e); }
+
+  // -------------------- ACTION CANDIDATE FINDER --------------------
+  function isVisible(el){
+    if(!el || el.nodeType!==1) return false;
+    if (el.hasAttribute('hidden')) return false;
+    if (safeAttr(el,'aria-hidden') === 'true') return false;
+    const s = (safeAttr(el,'style')||'').toLowerCase();
+    if (/display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0/.test(s)) return false;
+    return true;
+  }
+  function looksLikeAction(el){
+    if(!isVisible(el)) return false;
+    const txt = (el.innerText||'').trim().toLowerCase();
+    const title = (safeAttr(el,'title')||'').toLowerCase();
+    const al = (safeAttr(el,'aria-label')||'').toLowerCase();
+    const signals = ['action','actions','close','x','×','more','menu','submit','apply','ok','cancel'];
+    for(const s of signals){
+      if(txt === s || txt.indexOf(s) !== -1) return true;
+      if(title.indexOf(s) !== -1) return true;
+      if(al.indexOf(s) !== -1) return true;
+    }
+    const svgs = el.querySelectorAll ? Array.from(el.querySelectorAll('svg, i, span')) : [];
+    for(const node of svgs){
+      const cls = (node.getAttribute && (node.getAttribute('class')||'') || '').toLowerCase();
+      if(/close|times|x-icon|icon-close|fa-close|fa-times|more|ellipsis/.test(cls)) return true;
+      const aria = (node.getAttribute && (node.getAttribute('aria-label')||'') || '').toLowerCase();
+      if(aria && /close|more|menu/.test(aria)) return true;
+    }
+    if (safeAttr(el,'data-action') || safeAttr(el,'data-click')) return true;
+    return false;
+  }
+
+  NS.findActionCandidates = function(scopeDoc){
+    const doc = scopeDoc || (typeof window.CURRENT_DOC !== 'undefined' && window.CURRENT_DOC) ? window.CURRENT_DOC : document;
+    const all = Array.from(doc.querySelectorAll('button, a, [role="button"], div, span'));
+    const cands = all.filter(looksLikeAction);
+    const mapped = cands.map((el, i) => {
+      const basic = genBasicXPath(el);
+      const sf = genSalesforceXPath(el);
+      const pega = genPegaXPath(el);
+      return {
+        index: i+1,
+        node: el,
+        text: (el.innerText||'').trim(),
+        title: safeAttr(el,'title')||'',
+        aria: safeAttr(el,'aria-label')||'',
+        basicXPath: basic,
+        sfXPath: sf,
+        pegaXPath: pega,
+        css: (typeof window.generateCssSelector === 'function') ? window.generateCssSelector(el) : ''
+      };
+    });
+
+    window.CURRENT_LOCATORS = mapped.map((m, idx) => ({
+      id: `A${idx+1}`,
+      tag: (m.node.tagName||'').toLowerCase(),
+      text: m.text || m.title || m.aria || '',
+      framework: (m.sfXPath ? 'Salesforce+' : (m.pegaXPath ? 'Pega+' : '')),
+      xpaths: { basic: m.basicXPath, sf: m.sfXPath, pega: m.pegaXPath },
+      css: m.css,
+      elementRef: m.node
+    }));
+    if(typeof NS.printFillLocatorList === 'function') NS.printFillLocatorList('basic','locator-dump');
+    return mapped;
+  };
+
+  NS.highlightCandidate = function(n, color){
+    color = color || 'rgba(255,165,0,0.55)';
+    const list = window.CURRENT_LOCATORS || [];
+    const idx = Number(n) - 1;
+    if(!list[idx]) { console.warn('no candidate at', n); return; }
+    const el = list[idx].elementRef || list[idx].element || null;
+    if(!el){ console.warn('element ref missing'); return; }
+    const orig = el.style.boxShadow;
+    el.style.boxShadow = `0 0 0 3px ${color}, inset 0 0 0 1px #fff`;
+    setTimeout(()=>{ el.style.boxShadow = orig; }, 2500);
+    dbg('highlighted candidate', n, el);
+  };
+
+  // -------------------- ARTIFACT GENERATOR (starter project files) --------------------
+  // Tanglish: "When user wants sample POM/PageObject files for Selenium/Playwright in Java/JS/Python"
+  NS._normLocs = function(locs){
+    return (locs || []).map((l,i) => {
+      if(typeof l === 'string') return { name: `elem${i+1}`, xpath: l };
+      const name = l.name || l.fieldName || (`elem${i+1}`);
+      const xpath = l.xpath || l.locator || `//*[@id='${name}']`;
+      return { name, xpath };
+    });
+  };
+
+  NS.buildArtifactsFiles = function(options){
+    options = options || {};
+    const fw = (options.fw||'').toLowerCase();
+    const lang = (options.lang||'').toLowerCase();
+    const runner = (options.runner||'').toLowerCase();
+    const locs = NS._normLocs(options.locs || []).slice(0, 50);
+    const files = {};
+    files["README.md"] = "# Auto-generated artifacts\nThis zip contains starter project files.";
+
+    files["src/test/resources/config.properties"] =
+`base.url=https://your-app.example.com
+browser=chrome
+headless=false
+username=demoUser
+password=demoPass
+`;
+
+    if(fw === 'selenium' && lang === 'java'){
+      files["pom.xml"] = `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>adhyan-selenium-java</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <properties><maven.compiler.source>11</maven.compiler.source><maven.compiler.target>11</maven.compiler.target></properties>
+  <dependencies>
+    <dependency><groupId>org.seleniumhq.selenium</groupId><artifactId>selenium-java</artifactId><version>4.11.0</version></dependency>
+    <dependency><groupId>org.testng</groupId><artifactId>testng</artifactId><version>7.8.0</version><scope>test</scope></dependency>
+  </dependencies>
+</project>`;
+      const fields = locs.map(l => `    @FindBy(xpath = "${l.xpath.replace(/"/g,'\\"')}")\n    private WebElement ${l.name};`).join('\n\n');
+      const methods = locs.map((l,i) => {
+        const cap = l.name.charAt(0).toUpperCase() + l.name.slice(1);
+        return `    public void click${cap}(){ ${l.name}.click(); }\n    public void sendKeys${cap}(String val){ ${l.name}.clear(); ${l.name}.sendKeys(val != null ? val : "sample${i+1}"); }`;
+      }).join('\n\n');
+      files["src/main/java/com/pageobjects/SamplePage.java"] = `package com.pageobjects;
+
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
+import org.openqa.selenium.support.FindBy;
+import org.openqa.selenium.support.PageFactory;
+
+public class SamplePage {
+    WebDriver driver;
+
+${fields}
+
+    public SamplePage(WebDriver driver){
+        this.driver = driver;
+        PageFactory.initElements(driver, this);
+    }
+
+${methods}
+}`;
+      files["src/test/java/com/tests/SampleTest.java"] = `package com.tests;
+
+import com.pageobjects.SamplePage;
+import org.testng.annotations.Test;
+
+public class SampleTest {
+    @Test
+    public void quickFlow() throws InterruptedException {
+        // create driver in your BaseTest and pass here
+        // SamplePage p = new SamplePage(driver);
+    }
+}`;
+      return files;
+    }
+
+    if(fw === 'selenium' && lang === 'javascript'){
+      files["package.json"] = JSON.stringify({ name:"adhyan-selenium-js", version:"1.0.0", scripts:{ test: "mocha test/*.js --timeout 20000" }, dependencies: { "selenium-webdriver":"4.11.0" } }, null, 2);
+      files["test/test_sample.js"] = `const {Builder, By} = require('selenium-webdriver'); (async()=>{let d=new Builder().forBrowser('chrome').build(); try{await d.get('https://your-app.example.com');} finally{ await d.quit(); }})();`;
+      return files;
+    }
+
+    if(fw === 'playwright' && (lang === 'javascript' || lang === 'typescript')){
+      files["package.json"] = JSON.stringify({ name:"adhyan-pw-js", devDependencies: {"@playwright/test":"latest"}, scripts:{ test:"npx playwright test" } }, null, 2);
+      files["tests/login.spec.js"] = `const { test, expect } = require('@playwright/test'); test('smoke', async ({ page }) => { await page.goto('https://your-app.example.com'); });`;
+      return files;
+    }
+
+    if(fw === 'playwright' && lang === 'python'){
+      files["requirements.txt"] = "playwright==latest\npytest==latest\n";
+      files["test/test_playwright.py"] = `from playwright.sync_api import sync_playwright\n\ndef test_login():\n    with sync_playwright() as pw:\n        b = pw.chromium.launch(headless=False)\n        p = b.new_page()\n        p.goto("https://your-app.example.com")\n        b.close()\n`;
+      return files;
+    }
+
+    return files;
+  };
+
+  NS.downloadZipFromFiles = async function(filesMap, zipName){
+    if (!window.JSZip){ alert('JSZip not loaded. Add JSZip to the page to enable zip download.'); return; }
+    const zip = new JSZip();
+    Object.keys(filesMap).forEach(path => zip.file(path, filesMap[path]));
+    const blob = await zip.generateAsync({type:'blob'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = zipName || 'automation_project.zip';
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  };
+
+  // -------------------- EXTRACT ALL LOCATORS (MAIN) --------------------
+  // Tanglish: "Main function — extracts candidate elements, generates xpaths, dedupes and sets window.CURRENT_LOCATORS"
+  NS.extractAllLocators = function(forceUseIframe){
+    let DOC = document;
+    const preview = document.getElementById('preview') || document.querySelector('iframe#preview');
+    if (preview && !forceUseIframe){
+      try {
+        if (preview.contentDocument){ DOC = preview.contentDocument; dbg('using preview.contentDocument'); }
+      } catch(e){ dbg('preview inaccessible', e); showToast('Preview DOM inaccessible (cross-origin). Using parsed DOM if available.'); }
+    }
+    if (!DOC || DOC === document){
+      if (window._PARSER_DOC) DOC = window._PARSER_DOC;
+    }
+    if (!DOC) DOC = document;
+
+    let elements = collectCandidateElements(DOC);
+    elements = elements.filter(el => !shouldSkip(el));
+
+    const results = [];
+    for(const el of elements){
+      const attrs = {
+        id: el.id || null,
+        name: safeAttr(el,'name') || null,
+        'data-qa-locator': safeAttr(el,'data-qa-locator') || null,
+        'data-ctl': safeAttr(el,'data-ctl') || null,
+        'data-aura-class': safeAttr(el,'data-aura-class') || null,
+        'data-aura-rendered-by': safeAttr(el,'data-aura-rendered-by') || null,
+        'data-key': safeAttr(el,'data-key') || null,
+        'data-id': safeAttr(el,'data-id') || null,
+        role: safeAttr(el,'role') || null,
+        placeholder: safeAttr(el,'placeholder') || null,
+        type: safeAttr(el,'type') || null
+      };
+      const xpaths = {
+        basic: genBasicXPath(el),
+        wildcards: genWildcardXPath(el),
+        axes: genAxesXPath(el),
+        functions: genFunctionXPath(el),
+        sf: genSalesforceXPath(el),
+        sflwc: genSalesforceLWCXPath(el),
+        sfaura: genSalesforceAuraXPath(el),
+        pega: genPegaXPath(el)
+      };
+      const css = (typeof window.generateCssSelector === 'function') ? window.generateCssSelector(el) : '';
+      const playwright = (typeof window.generatePlaywrightSelectors === 'function') ? window.generatePlaywrightSelectors(el) : '';
+      const anchors = getSmartAnchorTextSafe(el);
+      const best = bestXPath(el);
+      results.push({ element: el, tag: el.tagName.toLowerCase(), attrs, anchors, xpaths, css, playwright, best });
+    }
+
+    // post-filter + dedupe
+    const seen = new Set();
+    const deduped = [];
+    for(const r of results){
+      if(!r.element || shouldSkip(r.element)) continue;
+      const sig = [
+        r.tag,
+        r.attrs.id || '',
+        r.attrs.name || '',
+        r.attrs['data-qa-locator'] || '',
+        r.attrs['data-ctl'] || '',
+        r.attrs['data-key'] || '',
+        r.attrs['data-id'] || '',
+        r.anchors || '',
+        r.best || ''
+      ].join('|');
+      if(seen.has(sig)) continue;
+      seen.add(sig);
+      deduped.push(r);
+    }
+
+    // expose in UI-friendly shape
+    window.CURRENT_LOCATORS = deduped.map((d,i) => ({
+      id: d.attrs.id || `E${i+1}`,
+      tag: d.tag,
+      text: d.anchors || d.attrs.name || (d.element && (d.element.innerText || d.element.textContent) ? (d.element.innerText || d.element.textContent).trim() : '') || '',
+      framework: (d.xpaths && d.xpaths.sf) ? 'Salesforce+' : (d.xpaths && d.xpaths.pega) ? 'Pega+' : '',
+      xpaths: { basic: d.xpaths.basic, wildcards: d.xpaths.wildcards, axes: d.xpaths.axes, functions: d.xpaths.functions, sf: d.xpaths.sf, sflwc: d.xpaths.sflwc, sfaura: d.xpaths.sfaura, pega: d.xpaths.pega },
+      css: d.css,
+      playwright: d.playwright,
+      elementRef: d.element
+    }));
+
+    try { NS.fillLocatorList('basic'); } catch(e){ dbg('fillLocatorList failed', e); }
+    showToast(`Extracted ${window.CURRENT_LOCATORS.length} elements`);
+    dbg('extractAllLocators ->', window.CURRENT_LOCATORS.length);
+    return window.CURRENT_LOCATORS;
+  };
+
+  // Auto-install toolbar
+  try { ensureDynamicPanel(); } catch(e){ dbg('ensureDynamicPanel failed', e); }
+
+  console.info('AdhyanFullPatch loaded. API: window.AdhyPatch.extractAllLocators(), fillLocatorList(panel), openDynamicPicker(), tryHighlightByXPath(), buildArtifactsFiles(options).');
+
+})();
+</script>
+</body>
+</html>
