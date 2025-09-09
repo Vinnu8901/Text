@@ -1,3 +1,31 @@
+<script>
+// === UI helper functions ===
+function renderPreview(){
+  const html = pasteBox.value || '';
+  preview.srcdoc = html || '<body><h3>No HTML</h3></body>';
+  try {
+    const parser = new DOMParser();
+    window._PARSER_DOC = parser.parseFromString(html,'text/html');
+  } catch(e){}
+  setTimeout(()=>{
+    try { window.AdhyPatch && window.AdhyPatch.extractAllLocators && window.AdhyPatch.extractAllLocators(); }
+    catch(e){ console.warn('extractAllLocators failed', e); }
+  },300);
+  const t = document.getElementById('toast');
+  if(t){ t.textContent='Preview rendered'; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1500); }
+}
+</script>
+
+<script>
+// === FULL offlineXpath.js content here ===
+(function AdhyanFullPatch(){ … })();
+</script>
+</body>
+</html>
+
+
+
+
 // --- Updated pom.xml (replace your previous pom.xml string with this) ---
 files["pom.xml"] = `<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
